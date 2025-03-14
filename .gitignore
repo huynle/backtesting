@@ -7,7 +7,6 @@ _version.py
 .eggs/*
 __pycache__/*
 dist/*
-strategies/*
 
 .coverage
 .coverage.*
