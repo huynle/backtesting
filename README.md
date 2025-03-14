@@ -108,6 +108,11 @@ Features
 
 ![xkcd.com/1570](https://imgs.xkcd.com/comics/engineer_syllogism.png)
 
+Live Trading
+-----------
+look into forks
+- https://github.com/OppOops/backtesting.py/blob/master/backtesting/live.py
+- https://github.com/ypogorelova/backtesting.py
 
 Bugs
 ----
@@ -115,6 +120,14 @@ Before reporting bugs or posting to the
 [discussion board](https://github.com/kernc/backtesting.py/discussions),
 please read [contributing guidelines](CONTRIBUTING.md), particularly the section
 about crafting useful bug reports and ```` ``` ````-fencing your code. We thank you!
+
+
+Jupyter Notebook
+----------------
+```
+pip install jupyterlab
+jupyter lab
+````
 
 
 Alternatives
