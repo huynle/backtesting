@@ -74,30 +74,42 @@ class InteractiveBrokers:
         self,
         symbol,
         bar_size,
-        duration,
+        start_date,
+        end_date,
         sec_type="STK",
         exchange="SMART",
         currency="USD",
         from_cache=True,
     ):
         """
-        Retrieves historical data from Interactive Brokers and returns a _Data object.
+        Retrieves historical data from Interactive Brokers and returns a Pandas DataFrame.
+
+        This function attempts to retrieve historical data for a given security from Interactive Brokers.
+        It first checks for a cached CSV file locally. If the file exists and `from_cache` is True,
+        it loads the data from the file. Otherwise, it connects to the IB API, requests the historical data,
+        and saves the data to a CSV file for future use.
 
         Args:
             symbol (str): The ticker symbol (e.g., "GOOG").
-            bar_size (str): The size of each bar (e.g., "1 day", "1 hour", "5 mins").  Legal values are 1 secs, 5 secs, 10 secs, 15 secs, 30 secs, 1 min, 2 mins, 3 mins, 5 mins, 10 mins, 15 mins, 20 mins, 30 mins, 1 hour, 2 hours, 3 hours, 4 hours, 8 hours, 1 day, 1W, 1M
-            duration (str): The duration of the historical data to retrieve (e.g., "1 Y", "6 M", "1 W"). Legal values are S, D, W, M, Y
-            secType (str): Security Type (e.g., "STK", "FUT", "OPT").
+            bar_size (str): The size of each bar (e.g., "1 day", "1 hour", "5 mins").
+                Legal values are: "1 secs", "5 secs", "10 secs", "15 secs", "30 secs", "1 min", "2 mins",
+                "3 mins", "5 mins", "10 mins", "15 mins", "20 mins", "30 mins", "1 hour", "2 hours", "3 hours",
+                "4 hours", "8 hours", "1 day", "1W", "1M".
+            start_date (str or datetime): The start date for the historical data (e.g., "20230101" or datetime object). This is not directly used, instead durationStr is calculated from the difference between end_date and start_date.
+            end_date (str or datetime): The end date for the historical data (e.g., "20231231" or datetime object).
+            sec_type (str): Security Type (e.g., "STK", "FUT", "OPT").
             exchange (str): Exchange (e.g., "SMART", "ARCA").
             currency (str): Currency (e.g., "USD").
-            from_cache (bool): If True, try to load data from a local CSV file.  Defaults to True.
+            from_cache (bool): If True, try to load data from a local CSV file. Defaults to True.
 
         Returns:
-            _Data: A _Data object containing the historical data.  Returns None on error.
+            pd.DataFrame: A Pandas DataFrame containing the historical data with a 'Date' index, or None on error.
         """
         # Construct the cache file path
         cache_dir = os.path.expanduser("~/.backtest/data")
-        cache_file = os.path.join(cache_dir, f"{symbol}-{bar_size}-{duration}.csv")
+        cache_file = os.path.join(
+            cache_dir, f"{symbol}-{bar_size}-{start_date}-{end_date}.csv".replace(" ", "_")
+        )
 
         # Check if the data exists in the cache
         if from_cache and os.path.exists(cache_file):
@@ -114,11 +126,47 @@ class InteractiveBrokers:
         req_id = self.app.nextOrderId
         self.app.nextOrderId += 1
 
+        # Handle different date formats for start_date and end_date
+        if isinstance(start_date, str):
+            try:
+                start = pd.to_datetime(start_date, format="%Y-%m-%d")
+            except ValueError:
+                start = pd.to_datetime(start_date)  # Let pandas infer the format
+        elif isinstance(start_date, datetime):
+            start = start_date
+        else:
+            raise ValueError("start_date must be a string or datetime object")
+
+        if isinstance(end_date, str):
+            try:
+                end = pd.to_datetime(end_date, format="%Y-%m-%d")
+            except ValueError:
+                end = pd.to_datetime(end_date)  # Let pandas infer the format
+        elif isinstance(end_date, datetime):
+            end = end_date
+        else:
+            raise ValueError("end_date must be a string or datetime object")
+
+        # Calculate duration string
+        duration = end - start
+        duration_str = ""
+        if duration.days > 365:
+            years = duration.days // 365
+            duration_str = f"{years} Y"
+        elif duration.days > 30:
+            months = duration.days // 30
+            duration_str = f"{months} M"
+        else:
+            duration_str = f"{duration.days} D"
+
+        # Format end_date for the API request
+        end_date_str = end.strftime("%Y%m%d %H:%M:%S")
+
         self.app.reqHistoricalData(
             reqId=req_id,
             contract=contract,
-            endDateTime="",  # Empty string for current time
-            durationStr=duration,
+            endDateTime=end_date_str,  # end date
+            durationStr=duration_str,
             barSizeSetting=bar_size,
             whatToShow="TRADES",  # Or "MIDPOINT", "BID_ASK", etc.
             useRTH=1,  # 1 for regular trading hours, 0 for all hours
@@ -156,31 +204,6 @@ if __name__ == "__main__":
     ib = InteractiveBrokers()  # Connect to IB Gateway/TWS
 
     # Get daily data for GOOG for the last year
-    data = ib.get_data(symbol="GOOG", bar_size="1 day", duration="1 Y")
-
-    if data:
-        print(data.head())  # Print the first few rows of the DataFrame
-    else:
-        print("Failed to retrieve GOOG data.")
-
-    # Get 5 minute data for AAPL for the last week
-    data = ib.get_data(symbol="AAPL", bar_size="5 mins", duration="1 W")
-
-    if data:
-        print(data.head())  # Print the first few rows of the DataFrame
-    else:
-        print("Failed to retrieve AAPL data.")
-
-    # Demonstrate loading from cache:
-    data_from_cache = ib.get_data(symbol="GOOG", bar_size="1 day", duration="1 Y", from_cache=True)
-    if data_from_cache is not None:
-        print("Successfully loaded GOOG data from cache.")
-        print(data_from_cache.head())
-
-    # Demonstrate forcing a fresh download (bypassing cache):
-    data_no_cache = ib.get_data(symbol="GOOG", bar_size="1 day", duration="1 Y", from_cache=False)
-    if data_no_cache is not None:
-        print("Successfully loaded GOOG data without cache.")
-        print(data_no_cache.head())
-
+    data = ib.get_data(symbol="SPY", bar_size="1 day", start_date="20210101", end_date="20250101")
     ib.disconnect()  # Disconnect from IB
+

@@ -1,42 +1,65 @@
 # run this using `python2 strategies/sma-cross.py` from the main directory
-from backtesting import Backtest, Strategy
-from backtesting.indicators import SMA
-from backtesting.provider.ibkr import InteractiveBrokers  # Importing the InteractiveBrokers class
-from backtesting.lib import crossover
-import talib
+import os
+
 import pandas as pd
+import pytest
+import talib
+
+from backtesting import Backtest, Strategy
+
+from .conftest import TEMP_DIR, StatsColumns  # Import StatsColumns from conftest.py
 
 
 class SmaCross(Strategy):
     def init(self):
         price = self.data.Close
-        # self.ma1 = self.I(SMA, price, 10)
-        # self.ma2 = self.I(SMA, price, 20)
-        self.ma1 = self.I(talib.EMA, price, 10)
-        self.ma2 = self.I(talib.EMA, price, 20)
+        self.ma = self.I(talib.SMA, price, 250)  # Calculate 200-day moving average
+        self.bought = False
 
     def next(self):
-        if crossover(self.ma1, self.ma2):
-            self.buy()
-        elif crossover(self.ma2, self.ma1):
-            self.sell()
+        if not self.bought and self.data.Close > self.ma:
+            self.buy()  # Buy if closing price is above 200-day MA
+            self.bought = True
+        elif self.bought and self.data.Close < self.ma:
+            self.sell()  # Sell if closing price is below 200-day MA
+            self.bought = False
 
 
-def test_sma_cross_with_ibkr_data():
-    # Initialize Interactive Brokers connection
-    ib = InteractiveBrokers()
+@pytest.mark.parametrize(
+    "ibkr_data",
+    [
+        {
+            "symbol": "SPY",
+            "bar_size": "1 day",
+            "start_date": "2002-01-01",
+            "end_date": "2010-01-01",
+        },
+        # {"symbol": "QQQ", "bar_size": "1 hour", "duration": "6 M"},
+        # {"symbol": "IWM", "bar_size": "30 mins", "duration": "3 M"},
+    ],
+    indirect=True,
+)
+def test_sma_cross_with_ibkr_data(ibkr_data):
+    request_parameterized = ibkr_data[0]
+    ibkr_data = ibkr_data[1]
 
-    # Fetch SPY data from Interactive Brokers
-    data = ib.get_data(symbol="SPY", bar_size="1 day", duration="1 Y")
-    # Disconnect from Interactive Brokers
-    ib.disconnect()
+    if ibkr_data is not None:
+        # Extract parameters for filename
+        symbol = request_parameterized.param.get("symbol")
+        bar_size = request_parameterized.param.get("bar_size")
+        start_date = request_parameterized.param.get("start_date")
+        end_date = request_parameterized.param.get("end_date")
+        strategy_name = "SmaCross"  # Hardcoded strategy name, adjust if needed
 
-    # Ensure data was successfully retrieved before proceeding
-    assert data is not None, "Failed to retrieve SPY data from Interactive Brokers."
+        # Construct the filename
+        filename = f"{strategy_name}-{symbol}-{bar_size}-{start_date}-{end_date}".replace(" ", "_")
+        filepath = os.path.join(TEMP_DIR, filename)
 
-    if data is not None:
-        bt = Backtest(data, SmaCross, commission=0.002, exclusive_orders=True)
+        bt = Backtest(ibkr_data, SmaCross, commission=0.002, exclusive_orders=True)
         stats = bt.run()
+        bt.plot(
+            filename=filepath, open_browser=False
+        )  # Consider commenting out plot during automated testing
 
         # Assert that the stats object is not None
         assert stats is not None, "Backtest run failed to produce stats."
@@ -44,13 +67,14 @@ def test_sma_cross_with_ibkr_data():
         # Add assertions to check key performance metrics
         assert isinstance(stats, pd.Series), "Stats should be a Pandas Series"
         assert "Equity Final [$]" in stats.index, "Equity Final not in stats"
+        assert (
+            stats[StatsColumns.RETURN.value] > stats[StatsColumns.BUY_AND_HOLD_RETURN.value]
+        ), "Return [%] should be greater than Buy & Hold Return [%]"
         assert "Return [%]" in stats.index, "Return not in stats"
         assert "Win Rate [%]" in stats.index, "Win Rate not in stats"
 
         # You can add more specific assertions based on expected performance
         assert stats["Return [%]"] > -100, "Return should be greater than -100%"  # Example
-
-        print(stats)
-        bt.plot()  # Consider commenting out plot during automated testing
     else:
         print("Failed to retrieve SPY data from Interactive Brokers. Exiting.")
+    # Initialize Interactive Brokers connection

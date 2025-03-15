@@ -11,6 +11,7 @@ dist/*
 .coverage
 .coverage.*
 htmlcov/*
+outputs/*
 
 doc/build/*
 build/*

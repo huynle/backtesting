@@ -6,10 +6,8 @@
 # 	python3 strategies/sma-cross.py
 
 
-test:
+test-core:
 	python3 -m pytest
 
-
-
-test-strategies:
+test:
 	python3 -m pytest test_strategies
