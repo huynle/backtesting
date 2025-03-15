@@ -117,9 +117,9 @@ class System(Strategy):
 # Let's see how our strategy fares replayed on nine years of Google stock data.
 
 # +
-from backtesting.test import GOOG
+from backtesting.test import data
 
-backtest = Backtest(GOOG, System, commission=.002)
+backtest = Backtest(data, System, commission=.002)
 backtest.run()
 # -
 

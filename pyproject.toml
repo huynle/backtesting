@@ -36,3 +36,7 @@ ignore-names = [
     'l',
     'h',
 ]
+
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -42,9 +42,9 @@
 
 # +
 # Example OHLC daily data for Google Inc.
-from backtesting.test import GOOG
+from backtesting.test import data
 
-GOOG.tail()
+data.tail()
 # -
 
 # ## Strategy
@@ -160,7 +160,7 @@ class SmaCross(Strategy):
 # +
 from backtesting import Backtest
 
-bt = Backtest(GOOG, SmaCross, cash=10_000, commission=.002)
+bt = Backtest(data, SmaCross, cash=10_000, commission=.002)
 stats = bt.run()
 stats
 # -
