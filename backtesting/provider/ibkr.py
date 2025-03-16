@@ -206,4 +206,3 @@ if __name__ == "__main__":
     # Get daily data for GOOG for the last year
     data = ib.get_data(symbol="SPY", bar_size="1 day", start_date="20210101", end_date="20250101")
     ib.disconnect()  # Disconnect from IB
-

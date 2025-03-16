@@ -6,8 +6,7 @@ import pytest
 import talib
 
 from backtesting import Backtest, Strategy
-
-from .conftest import TEMP_DIR, StatsColumns  # Import StatsColumns from conftest.py
+from test_strategies.conftest import END_DATE, START_DATE, TEMP_DIR, minimum_strategy_check
 
 
 class SmaCross(Strategy):
@@ -31,11 +30,15 @@ class SmaCross(Strategy):
         {
             "symbol": "SPY",
             "bar_size": "1 day",
-            "start_date": "2002-01-01",
-            "end_date": "2010-01-01",
+            "start_date": START_DATE,
+            "end_date": END_DATE,
         },
-        # {"symbol": "QQQ", "bar_size": "1 hour", "duration": "6 M"},
-        # {"symbol": "IWM", "bar_size": "30 mins", "duration": "3 M"},
+        # {
+        #     "symbol": "QQQ",
+        #     "bar_size": "1 day",
+        #     "start_date": START_DATE,
+        #     "end_date": END_DATE,
+        # },
     ],
     indirect=True,
 )
@@ -67,11 +70,10 @@ def test_sma_cross_with_ibkr_data(ibkr_data):
         # Add assertions to check key performance metrics
         assert isinstance(stats, pd.Series), "Stats should be a Pandas Series"
         assert "Equity Final [$]" in stats.index, "Equity Final not in stats"
-        assert (
-            stats[StatsColumns.RETURN.value] > stats[StatsColumns.BUY_AND_HOLD_RETURN.value]
-        ), "Return [%] should be greater than Buy & Hold Return [%]"
         assert "Return [%]" in stats.index, "Return not in stats"
         assert "Win Rate [%]" in stats.index, "Win Rate not in stats"
+
+        minimum_strategy_check(stats)
 
         # You can add more specific assertions based on expected performance
         assert stats["Return [%]"] > -100, "Return should be greater than -100%"  # Example

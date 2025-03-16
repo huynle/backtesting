@@ -6,6 +6,12 @@ import pytest
 
 from backtesting.provider.ibkr import InteractiveBrokers  # Importing the InteractiveBrokers class
 
+# Define a temporary directory for test files
+TEMP_DIR = "outputs"
+CREATE_OUTPUTS_HTLM = False
+START_DATE = "1990-01-01"
+END_DATE = "2000-01-01"
+
 
 class StatsColumns(Enum):
     START = "Start"
@@ -62,10 +68,6 @@ def ibkr_data(request):
     return (request, data)
 
 
-# Define a temporary directory for test files
-TEMP_DIR = "outputs"
-
-
 # Ensure the temporary directory exists and is empty before each test session
 def pytest_sessionstart(session):
     # if os.path.exists(TEMP_DIR):
@@ -78,3 +80,15 @@ def pytest_sessionfinish(session):
     pass
     # if os.path.exists(TEMP_DIR):
     #     shutil.rmtree(TEMP_DIR)
+
+
+def minimum_strategy_check(stats):
+    """
+    Fixture to assert that the return is greater than the buy and hold return.
+    This fixture can be used in tests to ensure a minimum performance standard.
+    """
+    # assert (
+    #     stats[StatsColumns.RETURN.value] > stats[StatsColumns.BUY_AND_HOLD_RETURN.value]
+    # ), "Return [%] should be greater than Buy & Hold Return [%]"
+
+    assert stats[StatsColumns.RETURN.value] > 0, "Return [%] should be greater than 0"

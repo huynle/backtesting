@@ -1,3 +1,8 @@
+---
+title: W10-2025
+date: 03/16/2025
+lastmod: 
+---
 [![](https://i.imgur.com/E8Kj69Y.png)](https://kernc.github.io/backtesting.py/)
 
 Backtesting.py
@@ -130,9 +135,16 @@ jupyter lab
 ````
 
 
-Alternatives
-------------
-See [alternatives.md] for a list of alternative Python
-backtesting frameworks and related packages.
+ADDITIONAL WORK
+---------------
+* make backtest engine run live
+* "events" make up a strategy
+* Position Manager
+  + ensures risks and reward ratio, stop loss, etc
 
-[alternatives.md]: https://github.com/kernc/backtesting.py/blob/master/doc/alternatives.md
+
+
+---
+## Logs
+### Sun 03/16/2025
++ looking to make backtest engine run on live data by yielding
