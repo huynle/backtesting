@@ -4,9 +4,10 @@ import logging
 from functools import partial
 from typing import Any, Dict, List, Set, Optional
 
-from backtesting import Backtest
-from .converter import ohlcv_to_dataframe
-from .event import Event, EventSource, EventProducer
+from backtesting.backtesting import Backtest
+from backtesting.livetrading.converter import ohlcv_to_dataframe
+
+from backtesting.livetrading.event import Event, EventSource, EventProducer
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +16,7 @@ class EventDispatcher:
     """Responsible for connecting event sources to event handlers and dispatching events
     in the right order.
     """
+
     def __init__(self, strategy):
         self._event_handlers: Dict[EventSource, List[Any]] = {}
         self._prefetched_events: Dict[EventSource, Optional[Event]] = {}
@@ -29,15 +31,25 @@ class EventDispatcher:
     def set_strategy(self, strategy):
         self._strategy = strategy
 
-    def set_backtesting_partial(self, cash: float = 10_000,
-                                commission: float = .0,
-                                margin: float = 1.,
-                                trade_on_close=False,
-                                hedging=False,
-                                exclusive_orders=False):
-        self.backtesting = partial(Backtest, strategy=self.strategy, cash=cash, commission=commission,
-                                   margin=margin, trade_on_close=trade_on_close,
-                                   hedging=hedging, exclusive_orders=exclusive_orders)
+    def set_backtesting_partial(
+        self,
+        cash: float = 10_000,
+        commission: float = 0.0,
+        margin: float = 1.0,
+        trade_on_close=False,
+        hedging=False,
+        exclusive_orders=False,
+    ):
+        self.backtesting = partial(
+            Backtest,
+            strategy=self.strategy,
+            cash=cash,
+            commission=commission,
+            margin=margin,
+            trade_on_close=trade_on_close,
+            hedging=hedging,
+            exclusive_orders=exclusive_orders,
+        )
 
     def subscribe(self, source: EventSource, event_handler: Any):
         """Registers an callable that will be called when an event source has new events.
@@ -73,13 +85,15 @@ class EventDispatcher:
     def _dispatch_next(self, ge_or_assert: Optional[datetime.datetime]):
         # Pre-fetch events from all sources.
         sources_to_pop = [
-            source for source in self._event_handlers.keys() if
-            self._prefetched_events.get(source) is None
+            source
+            for source in self._event_handlers.keys()
+            if self._prefetched_events.get(source) is None
         ]
         for source in sources_to_pop:
             if source.events:
                 df = ohlcv_to_dataframe([event.data for event in source.events])
                 bt = self.backtesting(data=df)
+                # NOTE: does it backtest at every event loop?
                 bt.run()
 
                 event = source.events.pop()
@@ -96,16 +110,18 @@ class EventDispatcher:
         prefetched_events = [e for e in self._prefetched_events.values() if e]
         if prefetched_events:
             next_dt = min(map(lambda e: e.when, prefetched_events))
-        assert ge_or_assert is None or next_dt is None or next_dt >= ge_or_assert, \
-            f"{next_dt} can't be dispatched after {ge_or_assert}"
+        assert (
+            ge_or_assert is None or next_dt is None or next_dt >= ge_or_assert
+        ), f"{next_dt} can't be dispatched after {ge_or_assert}"
 
         # Dispatch events matching the desired datetime.
         event_handlers = []
         for source, e in self._prefetched_events.items():
             if e is not None and e.when == next_dt:
                 # Collect event handlers for the event source.
-                event_handlers += [event_handler(e) for event_handler in
-                                   self._event_handlers.get(source, [])]
+                event_handlers += [
+                    event_handler(e) for event_handler in self._event_handlers.get(source, [])
+                ]
                 # Consume the event.
                 self._prefetched_events[source] = None
 

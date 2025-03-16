@@ -1,10 +1,20 @@
+import sys
+import os
+
+# Get the directory containing the current script
+parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# Add the parent directory to sys.path
+sys.path.append(parent_dir)
+
+
 import pandas as pd
 import websocket
 
 from backtesting import Strategy
-from livetrading import executor
-from livetrading.broker import Broker, Pair
-from livetrading.config import config
+from backtesting.livetrading import executor
+from backtesting.livetrading.broker import Broker, Pair
+from backtesting.livetrading.config import config
 
 
 def SMA(arr: pd.Series, n: int) -> pd.Series:
@@ -44,22 +54,22 @@ class PositionManager:
         pass
 
 
-if __name__ == '__main__':
-
-    websocket.enableTrace(False)
+if __name__ == "__main__":
+    # websocket.enableTrace(False)
 
     event_dis = executor.EventDispatcher(LiveStrategy)
 
     exchange = Broker(event_dis, config=config)
 
-    pair_info = exchange.get_pair_info('BTC-USD')
+    pair_info = exchange.get_pair_info("BTC-USD")
 
     position_mgr = PositionManager(exchange, 0.8)
 
     strategy = LiveStrategy(exchange, [], {})
 
-    exchange.subscribe_to_ticker_events(Pair(base_symbol="UTC", quote_symbol="SDT"),
-                                        '3m', position_mgr.on_event)
+    exchange.subscribe_to_ticker_events(
+        Pair(base_symbol="UTC", quote_symbol="SDT"), "3m", position_mgr.on_event
+    )
 
     event_dis.set_strategy(strategy)
 

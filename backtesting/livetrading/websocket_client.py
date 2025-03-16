@@ -3,20 +3,21 @@ import websocket, json, _thread
 
 from typing import Dict, List, Set
 
-from livetrading.event import EventSource, EventProducer
+from backtesting.livetrading.event import EventSource, EventProducer
 
 logger = logging.getLogger(__name__)
 
 
-class WSClient(EventProducer, websocket.WebSocketApp):
-    """"Class for channel based web socket clients.
-     :param config: Config settings for exchange.
+class WSClient(EventProducer, websocket.WebSocket):
+    """ "Class for channel based web socket clients.
+    :param config: Config settings for exchange.
     """
+
     def __init__(self, config):
-        super(WSClient, self).__init__(config['ws_url'])
+        super(WSClient, self).__init__(config["ws_url"])
         self.event_sources: Dict[str, EventSource] = {}
         self.pending_subscriptions: Set[str] = set()
-        self.timeout = config['ws_timeout']
+        self.timeout = config["ws_timeout"]
         self.on_open = lambda ws: self.subscribe_msg()
         self.on_message = lambda ws, msg: self.handle_message(json.loads(msg))
         self.on_error = lambda ws, e: logger.warning(f"Error: {e}")
@@ -36,23 +37,14 @@ class WSClient(EventProducer, websocket.WebSocketApp):
 
     def on_close(self):
         self.pending_subscriptions = set()
-    
+
     def main(self):
         if not self._running:
             self.thread = _thread.start_new_thread(self.run_forever, ())
             self._running = True
 
-    def subscribe_to_channels(
-            self, channels: List[str]
-    ):
-        sub_msg = {
-            "type": "subscribe",
-            "product_ids": [
-                "ETH-USD",
-                "BTC-USD"
-            ],
-            "channels": channels
-        }
+    def subscribe_to_channels(self, channels: List[str]):
+        sub_msg = {"type": "subscribe", "product_ids": ["ETH-USD", "BTC-USD"], "channels": channels}
         self.send(json.dumps(sub_msg))
         logger.info(f"Subscribed to channels: {channels}")
 
@@ -61,3 +53,4 @@ class WSClient(EventProducer, websocket.WebSocketApp):
         event_source = self.event_sources.get(channel)
         if event_source:
             event_source.push_to_queue(message)
+

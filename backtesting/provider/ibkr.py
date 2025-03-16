@@ -5,6 +5,8 @@ import pandas as pd
 import time
 import os
 
+from backtesting.backtesting import _Broker
+
 
 # Assuming _Data is defined elsewhere in your backtesting framework
 # Example:
@@ -16,6 +18,7 @@ class _Data:
 class IBapi(EWrapper, EClient):
     def __init__(self):
         EClient.__init__(self, self)
+        self.nextOrderId = 0
         self.data = {}  # Store historical data
 
     def historicalData(self, reqId: int, bar):
@@ -39,6 +42,9 @@ class IBapi(EWrapper, EClient):
         df.set_index("Date", inplace=True)
         self.data[reqId] = df  # Store DataFrame instead of raw list
 
+    def live_data(self):
+        pass
+
     def error(self, reqId, errorCode, errorString):
         print(f"Error: reqId={reqId}, code={errorCode}, string={errorString}")
 
@@ -47,7 +53,6 @@ class InteractiveBrokers:
     def __init__(self, client_id=0, port=4002, host="127.0.0.1"):
         self.app = IBapi()
         self.app.connect(host, port, client_id)
-        self.app.nextOrderId = 0
 
         # Start the IB API thread
         import threading
