@@ -3,7 +3,7 @@ from typing import Any, Dict, Optional
 
 from backtesting.livetrading.event import KLinesEventSource, Pair, PairInfo, TickersEventSource
 from backtesting.livetrading.rest_cli import RestClient
-from backtesting.livetrading.websocket_client import WSClient
+from backtesting.livetrading.websocket_client import MockWSClient, WSClient
 
 
 class Broker:
@@ -18,7 +18,8 @@ class Broker:
         self.config = config
         self.api_cli = RestClient(self.config)
         self.cli: Optional[Any] = None  # external libs as ccxt
-        self.ws_cli = WSClient(config)
+        # self.ws_cli = WSClient(config)
+        self.ws_cli = MockWSClient(config)
         self._cached_pairs: Dict[Pair] = {}
 
     def subscribe_to_ticker_events(self, pair: Pair, interval: str, event_handler):

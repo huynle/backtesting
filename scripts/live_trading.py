@@ -14,7 +14,7 @@ import websocket
 from backtesting import Strategy
 from backtesting.livetrading import executor
 from backtesting.livetrading.broker import Broker, Pair
-from backtesting.livetrading.config import config
+# from backtesting.livetrading.config import config
 
 
 def SMA(arr: pd.Series, n: int) -> pd.Series:
@@ -56,6 +56,10 @@ class PositionManager:
 
 if __name__ == "__main__":
     # websocket.enableTrace(False)
+    from configloader import ConfigLoader
+
+    config = ConfigLoader()
+    config.update_from_json_file("./env")
 
     event_dis = executor.EventDispatcher(LiveStrategy)
 
