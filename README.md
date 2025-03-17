@@ -148,3 +148,6 @@ ADDITIONAL WORK
 ## Logs
 ### Sun 03/16/2025
 + looking to make backtest engine run on live data by yielding
++ WebAPI for interactive broker for websocket streaming - read documentation - https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/#introduction
+  + IBind tries to take are of automating authentication- https://github.com/Voyz/ibind
+  + IBeam tries to take are of websocket and interacting with IB API - https://github.com/Voyz/ibeam

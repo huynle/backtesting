@@ -42,7 +42,7 @@ class EventDispatcher:
     ):
         self.backtesting = partial(
             Backtest,
-            strategy=self.strategy,
+            strategy=self._strategy,
             cash=cash,
             commission=commission,
             margin=margin,
