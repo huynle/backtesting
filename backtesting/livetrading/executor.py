@@ -94,7 +94,8 @@ class EventDispatcher:
                 df = ohlcv_to_dataframe([event.data for event in source.events])
                 bt = self.backtesting(data=df)
                 # NOTE: does it backtest at every event loop?
-                bt.run()
+                # bt.run()
+                print(df.to_json())
 
                 event = source.events.pop()
                 # Check that events from the same source are returned in order.

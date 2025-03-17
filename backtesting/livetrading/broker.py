@@ -2,7 +2,7 @@ from decimal import Decimal
 from typing import Any, Dict, Optional
 
 from backtesting.livetrading.event import KLinesEventSource, Pair, PairInfo, TickersEventSource
-from backtesting.livetrading.rest_cli import RestClient
+from backtesting.livetrading.rest_cli import MockRestClient, RestClient
 from backtesting.livetrading.websocket_client import MockWSClient, WSClient
 
 
@@ -16,7 +16,8 @@ class Broker:
     def __init__(self, dispatcher, config):
         self.dispatcher = dispatcher
         self.config = config
-        self.api_cli = RestClient(self.config)
+        # self.api_cli = RestClient(self.config)
+        self.api_cli = MockRestClient(self.config)
         self.cli: Optional[Any] = None  # external libs as ccxt
         # self.ws_cli = WSClient(config)
         self.ws_cli = MockWSClient(config)

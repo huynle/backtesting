@@ -38,6 +38,7 @@ if __name__ == "__main__":
             "configloader >= 1.0.1",
             "websocket-client >= 1.6.0",
             "urllib3 >= 2.0.3",
+            "requests >= 2.32.3",
         ],
         extras_require={
             "doc": [
