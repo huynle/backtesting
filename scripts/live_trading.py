@@ -13,7 +13,7 @@ import websocket
 
 from backtesting import Strategy
 from backtesting.livetrading import executor
-from backtesting.livetrading.broker import Broker, Pair
+from backtesting.livetrading.broker import Broker, Contract
 # from backtesting.livetrading.config import config
 
 
@@ -72,7 +72,7 @@ if __name__ == "__main__":
     strategy = LiveStrategy(exchange, [], {})
 
     exchange.subscribe_to_ticker_events(
-        Pair(base_symbol="UTC", quote_symbol="SDT"), "3m", position_mgr.on_event
+        Contract(base_symbol="UTC", quote_symbol="SDT"), "3m", position_mgr.on_event
     )
 
     event_dis.set_strategy(strategy)

@@ -8,22 +8,22 @@ from typing import Optional
 
 
 intervals = {
-            "1s": 1,
-            "1m": 60,
-            "3m": 3 * 60,
-            "5m": 5 * 60,
-            "15m": 15 * 60,
-            "30m": 30 * 60,
-            "1h": 3600,
-            "2h": 2 * 3600,
-            "4h": 4 * 3600,
-            "6h": 6 * 3600,
-            "8h": 8 * 3600,
-            "12h": 12 * 3600,
-            "1d": 86400,
-            "3d": 3 * 86400,
-            "1w": 7 * 86400,
-            "1M": 31 * 86400
+    "1s": 1,
+    "1m": 60,
+    "3m": 3 * 60,
+    "5m": 5 * 60,
+    "15m": 15 * 60,
+    "30m": 30 * 60,
+    "1h": 3600,
+    "2h": 2 * 3600,
+    "4h": 4 * 3600,
+    "6h": 6 * 3600,
+    "8h": 8 * 3600,
+    "12h": 12 * 3600,
+    "1d": 86400,
+    "3d": 3 * 86400,
+    "1w": 7 * 86400,
+    "1M": 31 * 86400,
 }
 
 
@@ -39,6 +39,7 @@ class Bar:
     :param close: The closing price.
     :param volume: The volume traded.
     """
+
     date: datetime
     pair: str
     Open: float
@@ -49,12 +50,36 @@ class Bar:
 
 
 @dataclasses.dataclass
+class Contract:
+    pass
+
+
+@dataclasses.dataclass
+class Symbol(Contract):
+    """A trading pair.
+
+    :param base_symbol: The base symbol.
+    :param quote_symbol: The quote symbol.
+    """
+
+    symbol: str = "AAPL"
+    secType: str = "STK"
+    exchange: str = "SMART"
+    currency: str = "USD"
+
+    def __str__(self):
+        # change format here to reflect corresponding exchange
+        return "{}".format(self.symbol)
+
+
+@dataclasses.dataclass
 class Pair:
     """A trading pair.
 
     :param base_symbol: The base symbol.
     :param quote_symbol: The quote symbol.
     """
+
     base_symbol: str
     quote_symbol: str
 
@@ -70,6 +95,7 @@ class PairInfo:
     :param base_increment: The increment for the base symbol.
     :param quote_increment: The increment for the quote symbol.
     """
+
     base_increment: float
     quote_increment: float
 
@@ -84,10 +110,11 @@ class Ticker:
     :param price: The price.
     :param volume: The volume traded.
     """
-    def __init__(self, pair: Pair, json: dict):
-        self.pair: Pair = pair
+
+    def __init__(self, pair: Contract, json: dict):
+        self.contract: Contract = pair
         self.json: dict = json
-        self.Date = isoparse(json['time'])
+        self.Date = isoparse(json["time"])
         self.Volume = float(json["volume_24h"])
         self.Open = float(json["open_24h"])
         self.High = float(json["high_24h"])
@@ -102,14 +129,18 @@ class KlineBar(Bar):
     :param pair: The trading pair.
     :param json: Message json.
     """
-    def __init__(self, pair: Pair, json: dict):
+
+    def __init__(self, pair: Contract, json: dict):
         super().__init__(
-            datetime.utcfromtimestamp(
-                int(json["t"] / 1e3).replace(tzinfo=datetime.timezone.utc)),
-            pair, float(json["o"]), float(json["h"]),
-            float(json["l"]), float(json["c"]), float(json["v"])
+            datetime.utcfromtimestamp(int(json["t"] / 1e3).replace(tzinfo=datetime.timezone.utc)),
+            pair,
+            float(json["o"]),
+            float(json["h"]),
+            float(json["l"]),
+            float(json["c"]),
+            float(json["v"]),
         )
-        self.pair: Pair = pair
+        self.pair: Contract = pair
         self.json: dict = json
 
 
@@ -120,6 +151,7 @@ class EventProducer:
         Main method is for main functions that should be performed for an event producer.
         Finalize method is called on error or stop.
     """
+
     def main(self):
         """Override to run the loop that produces events."""
         pass
@@ -157,6 +189,7 @@ class ChannelEventSource(EventSource):
 
     :param producer: EventProducer.
     """
+
     def __init__(self, producer: EventProducer):
         super().__init__(producer=producer)
 
@@ -170,17 +203,16 @@ class TickersEventSource(ChannelEventSource):
 
     :param pair: The trading pair.
     """
-    def __init__(self, pair: Pair, when: datetime, producer: EventProducer):
+
+    def __init__(self, pair: Contract, when: datetime, producer: EventProducer):
         super().__init__(producer=producer)
-        self.pair: Pair = pair
+        self.pair: Contract = pair
         self.when = intervals.get(when)
 
     def push_to_queue(self, message: dict):
         timestamp = message["time"]
         dt = isoparse(timestamp) + datetime.timedelta(seconds=self.when)
-        self.events.append(TickerEvent(
-            dt,
-            Ticker(self.pair, message)))
+        self.events.append(TickerEvent(dt, Ticker(self.pair, message)))
 
 
 class KLinesEventSource(EventSource):
@@ -188,9 +220,10 @@ class KLinesEventSource(EventSource):
 
     :param pair: The trading pair..
     """
-    def __init__(self, pair: Pair, producer: EventProducer):
+
+    def __init__(self, pair: Contract, producer: EventProducer):
         super().__init__(producer=producer)
-        self.pair: Pair = pair
+        self.pair: Contract = pair
 
     def push_to_queue(self, message: dict):
         kline_event = message["data"]
@@ -198,10 +231,14 @@ class KLinesEventSource(EventSource):
         # Wait for the last update to the kline.
         if kline["x"] is False:
             return
-        self.events.append(BarEvent(
-            datetime.utcfromtimestamp(
-                int(kline_event["E"] / 1e3).replace(tzinfo=datetime.timezone.utc)),
-            KlineBar(self.pair, kline)))
+        self.events.append(
+            BarEvent(
+                datetime.utcfromtimestamp(
+                    int(kline_event["E"] / 1e3).replace(tzinfo=datetime.timezone.utc)
+                ),
+                KlineBar(self.pair, kline),
+            )
+        )
 
     def ws_channel(self, interval: str) -> str:
         """
@@ -209,7 +246,8 @@ class KLinesEventSource(EventSource):
         """
         return "{}@kline_{}".format(
             "{}{}".format(self.pair.base_symbol.upper(), self.pair.quote_symbol.upper()).lower(),
-            interval)
+            interval,
+        )
 
 
 class BarEvent(Event):
@@ -218,6 +256,7 @@ class BarEvent(Event):
     :param when: The datetime when the event occurred. It must have timezone information set.
     :param bar: The bar.
     """
+
     def __init__(self, when, bar: Bar):
         super().__init__(when)
 
@@ -230,6 +269,7 @@ class TickerEvent(Event):
     :param when: The datetime when the event occurred. It must have timezone information set.
     :param ticker: The Ticker.
     """
+
     def __init__(self, when, ticker: Ticker):
         super().__init__(when)
 

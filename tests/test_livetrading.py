@@ -1,10 +1,16 @@
+from functools import partial
 import time
+from typing import assert_never, assert_type
 import pandas as pd
 import websocket
 
 from backtesting import Strategy
+from backtesting.backtesting import Backtest
+from backtesting.live import LiveMarketOhlcv, LiveTrade
 from backtesting.livetrading import executor
-from backtesting.livetrading.broker import Broker, Pair
+from backtesting.livetrading.broker import Broker, Contract
+from backtesting.livetrading.converter import ohlcv_to_dataframe
+from backtesting.livetrading.event import Bar, Contract, Symbol, Ticker, TickerEvent
 # from backtesting.livetrading.config import config
 
 
@@ -40,9 +46,40 @@ class PositionManager:
         self.exchange = exchange
         self.position_amount = position_amount
 
-    def on_event(self, bar_event):
+        # "`data` must be a pandas.DataFrame with columns "
+        # "'Open', 'High', 'Low', 'Close', and (optionally) 'Volume'"
+        self._backtesting = Backtest(
+            data=pd.DataFrame(
+                {
+                    "Open": [1],
+                    "High": [1],
+                    "Low": [1],
+                    "Close": [1],
+                    "Volume": [100],
+                },
+                index=[pd.Timestamp.utcnow()],  # Set the index to a list containing the timestamp
+            ),
+            strategy=LiveStrategy,
+        )
+
+        self.live_trade = LiveTrade(self._backtesting)
+        self.live_trade.init()
+
+    def on_event(self, event):
         # react on event from websocket
-        pass
+        assert isinstance(event, TickerEvent)
+
+        self.live_trade.on_bar(
+            LiveMarketOhlcv(
+                symbol=event.data.contract.symbol,
+                open_price=event.data.Open,
+                high_price=event.data.High,
+                low_price=event.data.Low,
+                close_price=event.data.Close,
+                total_qty=event.data.Volume,
+                timestamp_second=pd.Timestamp(event.data.Date, unit="s"),
+            )
+        )
 
 
 def test_live():
@@ -62,8 +99,13 @@ def test_live():
 
     strategy = LiveStrategy(exchange, [], {})
 
+    # exchange.subscribe_to_ticker_events(
+    #     Pair(base_symbol="UTC", quote_symbol="SDT"), "3m", position_mgr.on_event
+    # )
     exchange.subscribe_to_ticker_events(
-        Pair(base_symbol="UTC", quote_symbol="SDT"), "3m", position_mgr.on_event
+        Symbol(symbol="SPY"),
+        "1d",
+        position_mgr.on_event,
     )
 
     event_dis.set_strategy(strategy)

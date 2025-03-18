@@ -191,6 +191,7 @@ class LiveTrade:
         self._current_idx = self.start_idx
 
     def on_bar(self, bar: LiveMarketOhlcv):
+        self.run_next()
         ts_idx = pd.Timestamp(bar.timestamp_second_start, unit="s")
         df = self._df
         last_ts = df.index[-1]
@@ -212,6 +213,7 @@ class LiveTrade:
         # all indicators are re-calculate here
         self._mirror_data._set_length(len(df))
         self._mirror_strategy.init()
+        self.run()
 
     def run_next(self):
         err = self._run_with_ith_bar(self._current_idx)

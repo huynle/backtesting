@@ -1284,10 +1284,8 @@ class Backtest:
         exclusive_orders=False,
         finalize_trades=False,
     ):
-        # if not (isinstance(strategy, type) and issubclass(strategy, Strategy)):
-        #     raise TypeError("`strategy` must be a Strategy sub-type")
-        if not isinstance(strategy, Strategy):
-            raise TypeError("`strategy` must be a Strategy obj")
+        if not (isinstance(strategy, type) and issubclass(strategy, Strategy)):
+            raise TypeError("`strategy` must be a Strategy sub-type")
         if not isinstance(data, pd.DataFrame):
             raise TypeError("`data` must be a pandas.DataFrame with columns")
         if not isinstance(spread, Number):
@@ -1419,8 +1417,7 @@ class Backtest:
         """
         data = _Data(self._data.copy(deep=False))
         broker: _Broker = self._broker(data=data)
-        # strategy: Strategy = self._strategy(broker, data, kwargs)
-        strategy: Strategy = self._strategy
+        strategy: Strategy = self._strategy(broker, data, kwargs)
 
         strategy.init()
         data._update()  # Strategy.init might have changed/added to data.df

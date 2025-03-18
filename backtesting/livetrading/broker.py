@@ -1,7 +1,7 @@
 from decimal import Decimal
 from typing import Any, Dict, Optional
 
-from backtesting.livetrading.event import KLinesEventSource, Pair, PairInfo, TickersEventSource
+from backtesting.livetrading.event import KLinesEventSource, Contract, PairInfo, TickersEventSource
 from backtesting.livetrading.rest_cli import MockRestClient, RestClient
 from backtesting.livetrading.websocket_client import MockWSClient, WSClient
 
@@ -21,9 +21,9 @@ class Broker:
         self.cli: Optional[Any] = None  # external libs as ccxt
         # self.ws_cli = WSClient(config)
         self.ws_cli = MockWSClient(config)
-        self._cached_pairs: Dict[Pair] = {}
+        self._cached_pairs: Dict[Contract] = {}
 
-    def subscribe_to_ticker_events(self, pair: Pair, interval: str, event_handler):
+    def subscribe_to_ticker_events(self, pair: Contract, interval: str, event_handler):
         """Registers a callable that will be called every ticker.
 
         :param bar_duration: The bar duration. One of 1s, 1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 8h, 12h, 1d, 3d, 1w, 1M.
@@ -36,7 +36,7 @@ class Broker:
 
         self._subscribe_to_ws_channel_events(channel, event_handler, event_source)
 
-    def subscribe_to_bar_events(self, pair: Pair, event_handler, interval):
+    def subscribe_to_bar_events(self, pair: Contract, event_handler, interval):
         """Registers a callable that will be called every bar.
 
         :param pair: The trading pair.
@@ -47,7 +47,7 @@ class Broker:
 
         self._subscribe_to_ws_channel_events(channel, event_handler, event_source)
 
-    def get_pair_info(self, pair: Pair) -> PairInfo:
+    def get_pair_info(self, pair: Contract) -> PairInfo:
         """Returns information about a trading pair.
 
         :param pair: The trading pair.
