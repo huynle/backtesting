@@ -11,23 +11,19 @@ Please raise ideas for additions to this collection on the [issue tracker].
 [issue tracker]: https://github.com/kernc/backtesting.py
 """
 
-from __future__ import annotations
-
-import multiprocessing as mp
-import warnings
 from collections import OrderedDict
 from inspect import currentframe
-from itertools import chain, compress, count
+from itertools import compress
 from numbers import Number
-from typing import Callable, Generator, Optional, Sequence, Union
+from typing import Callable, Optional, Sequence, Union
 
 import numpy as np
 import pandas as pd
 
 from ._plotting import plot_heatmaps as _plot_heatmaps
 from ._stats import compute_stats as _compute_stats
-from ._util import SharedMemoryManager, _Array, _as_str, _batch, _tqdm
-from .backtesting import Backtest, Strategy
+from ._util import _as_str
+from .backtesting import Strategy
 
 __pdoc__ = {}
 
@@ -46,6 +42,7 @@ e.g.
 """
 
 TRADES_AGG = OrderedDict((
+    ('Ticker', 'first'),
     ('Size', 'sum'),
     ('EntryBar', 'first'),
     ('ExitBar', 'last'),
@@ -66,6 +63,7 @@ e.g.
 
 _EQUITY_AGG = {
     'Equity': 'last',
+    'Cash': 'last',
     'DrawdownPct': 'max',
     'DrawdownDuration': 'max',
 }
@@ -111,7 +109,7 @@ def crossover(series1: Sequence, series2: Sequence) -> bool:
         (series2, series2) if isinstance(series2, Number) else
         series2)
     try:
-        return series1[-2] < series2[-2] and series1[-1] > series2[-1]  # type: ignore
+        return series1[-2] < series2[-2] and series1[-1] > series2[-1]
     except IndexError:
         return False
 
@@ -125,25 +123,22 @@ def plot_heatmaps(heatmap: pd.Series,
                   open_browser: bool = True):
     """
     Plots a grid of heatmaps, one for every pair of parameters in `heatmap`.
-    See example in [the tutorial].
-
-    [the tutorial]: https://kernc.github.io/backtesting.py/doc/examples/Parameter%20Heatmap%20&%20Optimization.html#plot-heatmap  # noqa: E501
 
     `heatmap` is a Series as returned by
     `backtesting.backtesting.Backtest.optimize` when its parameter
     `return_heatmap=True`.
 
-    When projecting the n-dimensional (n > 2) heatmap onto 2D, the values are
+    When projecting the n-dimensional heatmap onto 2D, the values are
     aggregated by 'max' function by default. This can be tweaked
     with `agg` parameter, which accepts any argument pandas knows
     how to aggregate by.
 
     .. todo::
         Lay heatmaps out lower-triangular instead of in a simple grid.
-        Like [`sambo.plot.plot_objective()`][plot_objective] does.
+        Like [`skopt.plots.plot_objective()`][plot_objective] does.
 
     [plot_objective]: \
-        https://sambo-optimization.github.io/doc/sambo/plot.html#sambo.plot.plot_objective
+        https://scikit-optimize.github.io/stable/modules/plots.html#plot-objective
     """
     return _plot_heatmaps(heatmap, agg, ncols, filename, plot_width, open_browser)
 
@@ -192,22 +187,22 @@ def compute_stats(
         >>> long_stats = compute_stats(stats=stats, trades=only_long_trades,
         ...                            data=GOOG, risk_free_rate=.02)
     """
-    equity = stats._equity_curve.Equity
+    equity = stats._equity_curve
     if trades is None:
         trades = stats._trades
     else:
         # XXX: Is this buggy?
         equity = equity.copy()
-        equity[:] = stats._equity_curve.Equity.iloc[0]
+        equity['Equity'] = stats._equity_curve.Equity.iloc[0]
         for t in trades.itertuples(index=False):
-            equity.iloc[t.EntryBar:] += t.PnL
-    return _compute_stats(trades=trades, equity=equity.values, ohlc_data=data,
+            equity.iloc[t.EntryBar:, equity.columns.get_loc('Equity')] += t.PnL
+    return _compute_stats(orders=stats._orders, trades=trades, equity=equity, ohlc_data=data,
                           risk_free_rate=risk_free_rate, strategy_instance=stats._strategy)
 
 
 def resample_apply(rule: str,
                    func: Optional[Callable[..., Sequence]],
-                   series: Union[pd.Series, pd.DataFrame, _Array],
+                   series: Union[pd.Series, pd.DataFrame],
                    *args,
                    agg: Optional[Union[str, dict]] = None,
                    **kwargs):
@@ -275,7 +270,7 @@ http://pandas.pydata.org/pandas-docs/stable/timeseries.html#offset-aliases
                 # We make a separate function that returns the final
                 # indicator array.
                 def SMA(series, n):
-                    from backtesting.test import SMA
+                    backtestinging.test import SMA
                     return SMA(series, n).reindex(close.index).ffill()
 
                 # The result equivalent to the short example above:
@@ -285,13 +280,6 @@ http://pandas.pydata.org/pandas-docs/stable/timeseries.html#offset-aliases
     if func is None:
         def func(x, *_, **__):
             return x
-    assert callable(func), 'resample_apply(func=) must be callable'
-
-    if not isinstance(series, (pd.Series, pd.DataFrame)):
-        assert isinstance(series, _Array), \
-            'resample_apply(series=) must be `pd.Series`, `pd.DataFrame`, ' \
-            'or a `Strategy.data.*` array'
-        series = series.s
 
     if agg is None:
         agg = OHLCV_AGG.get(getattr(series, 'name', ''), 'last')
@@ -312,7 +300,7 @@ http://pandas.pydata.org/pandas-docs/stable/timeseries.html#offset-aliases
             strategy_I = frame.f_locals['self'].I             # type: ignore
             break
     else:
-        def strategy_I(func, *args, **kwargs):  # noqa: F811
+        def strategy_I(func, *args, **kwargs):
             return func(*args, **kwargs)
 
     def wrap_func(resampled, *args, **kwargs):
@@ -337,7 +325,7 @@ http://pandas.pydata.org/pandas-docs/stable/timeseries.html#offset-aliases
 
 
 def random_ohlc_data(example_data: pd.DataFrame, *,
-                     frac=1., random_state: Optional[int] = None) -> Generator[pd.DataFrame, None, None]:
+                     frac=1., random_state: Optional[int] = None) -> pd.DataFrame:
     """
     OHLC data generator. The generated OHLC data has basic
     [descriptive statistics](https://en.wikipedia.org/wiki/Descriptive_statistics)
@@ -349,7 +337,7 @@ def random_ohlc_data(example_data: pd.DataFrame, *,
     Such random data can be effectively used for stress testing trading
     strategy robustness, Monte Carlo simulations, significance testing, etc.
 
-    >>> from backtesting.test import EURUSD
+    >>> backtestinging.test import EURUSD
     >>> ohlc_generator = random_ohlc_data(EURUSD)
     >>> next(ohlc_generator)  # returns new random data
     ...
@@ -416,25 +404,29 @@ class SignalStrategy(Strategy):
         If `plot` is `True`, the signal entry/exit indicators are plotted when
         `backtesting.backtesting.Backtest.plot` is called.
         """
-        self.__entry_signal = self.I(  # type: ignore
-            lambda: pd.Series(entry_size, dtype=float).replace(0, np.nan),
-            name='entry size', plot=plot, overlay=False, scatter=True, color='black')
+        if isinstance(entry_size, pd.DataFrame) and len(entry_size.columns) == 1:
+            entry_size = entry_size.iloc[:, 0]
+        entry_size = pd.Series(entry_size, dtype=float).replace(0, np.nan)
+        self.__entry_signal = self.I(entry_size, name='entry size', plot=plot,
+                                     overlay=False, scatter=True, color='black')
 
         if exit_portion is not None:
-            self.__exit_signal = self.I(  # type: ignore
-                lambda: pd.Series(exit_portion, dtype=float).replace(0, np.nan),
-                name='exit portion', plot=plot, overlay=False, scatter=True, color='black')
+            if isinstance(exit_portion, pd.DataFrame) and len(exit_portion.columns) == 1:
+                exit_portion = exit_portion.iloc[:, 0]
+            exit_portion = pd.Series(exit_portion, dtype=float).replace(0, np.nan)
+            self.__exit_signal = self.I(exit_portion, name='exit portion', plot=plot,
+                                        overlay=False, scatter=True, color='black')
 
     def next(self):
         super().next()
 
         exit_portion = self.__exit_signal[-1]
         if exit_portion > 0:
-            for trade in self.trades:
+            for trade in self.trades():
                 if trade.is_long:
                     trade.close(exit_portion)
         elif exit_portion < 0:
-            for trade in self.trades:
+            for trade in self.trades():
                 if trade.is_short:
                     trade.close(-exit_portion)
 
@@ -476,29 +468,16 @@ class TrailingStrategy(Strategy):
 
     def set_trailing_sl(self, n_atr: float = 6):
         """
-        Set the future trailing stop-loss as some multiple (`n_atr`)
+        Sets the future trailing stop-loss as some multiple (`n_atr`)
         average true bar ranges away from the current price.
         """
         self.__n_atr = n_atr
-
-    def set_trailing_pct(self, pct: float = .05):
-        """
-        Set the future trailing stop-loss as some percent (`0 < pct < 1`)
-        below the current price (default 5% below).
-
-        .. note:: Stop-loss set by `pct` is inexact
-            Stop-loss set by `set_trailing_pct` is converted to units of ATR
-            with `mean(Close * pct / atr)` and set with `set_trailing_sl`.
-        """
-        assert 0 < pct < 1, 'Need pct= as rate, i.e. 5% == 0.05'
-        pct_in_atr = np.mean(self.data.Close * pct / self.__atr)  # type: ignore
-        self.set_trailing_sl(pct_in_atr)
 
     def next(self):
         super().next()
         # Can't use index=-1 because self.__atr is not an Indicator type
         index = len(self.data)-1
-        for trade in self.trades:
+        for trade in self.trades():
             if trade.is_long:
                 trade.sl = max(trade.sl or -np.inf,
                                self.data.Close[index] - self.__atr[index] * self.__n_atr)
@@ -507,111 +486,10 @@ class TrailingStrategy(Strategy):
                                self.data.Close[index] + self.__atr[index] * self.__n_atr)
 
 
-class FractionalBacktest(Backtest):
-    """
-    A `backtesting.backtesting.Backtest` that supports fractional share trading
-    by simple composition. It applies roughly the transformation:
-
-        data = (data * fractional_unit).assign(Volume=data.Volume / fractional_unit)
-
-    as left unchallenged in [this FAQ entry on GitHub](https://github.com/kernc/backtesting.py/issues/134),
-    then passes `data`, `args*`, and `**kwargs` to its super.
-
-    Parameter `fractional_unit` represents the smallest fraction of currency that can be traded
-    and defaults to one [satoshi]. For μBTC trading, pass `fractional_unit=1/1e6`.
-    Thus-transformed backtest does a whole-sized trading of `fractional_unit` units.
-
-    [satoshi]: https://en.wikipedia.org/wiki/Bitcoin#Units_and_divisibility
-    """
-    def __init__(self,
-                 data,
-                 *args,
-                 fractional_unit=1 / 100e6,
-                 **kwargs):
-        if 'satoshi' in kwargs:
-            warnings.warn(
-                'Parameter `FractionalBacktest(..., satoshi=)` is deprecated. '
-                'Use `FractionalBacktest(..., fractional_unit=)`.',
-                category=DeprecationWarning, stacklevel=2)
-            fractional_unit = 1 / kwargs.pop('satoshi')
-        data = data.copy()
-        data[['Open', 'High', 'Low', 'Close']] *= fractional_unit
-        data['Volume'] /= fractional_unit
-        super().__init__(data, *args, **kwargs)
-
-
 # Prevent pdoc3 documenting __init__ signature of Strategy subclasses
 for cls in list(globals().values()):
     if isinstance(cls, type) and issubclass(cls, Strategy):
         __pdoc__[f'{cls.__name__}.__init__'] = False
-
-
-class MultiBacktest:
-    """
-    Multi-dataset `backtesting.backtesting.Backtest` wrapper.
-
-    Run supplied `backtesting.backtesting.Strategy` on several instruments,
-    in parallel.  Used for comparing strategy runs across many instruments
-    or classes of instruments. Example:
-
-        from backtesting.test import EURUSD, BTCUSD, SmaCross
-        btm = MultiBacktest([EURUSD, BTCUSD], SmaCross)
-        stats_per_ticker: pd.DataFrame = btm.run(fast=10, slow=20)
-        heatmap_per_ticker: pd.DataFrame = btm.optimize(...)
-    """
-    def __init__(self, df_list, strategy_cls, **kwargs):
-        self._dfs = df_list
-        self._strategy = strategy_cls
-        self._bt_kwargs = kwargs
-
-    def run(self, **kwargs):
-        """
-        Wraps `backtesting.backtesting.Backtest.run`. Returns `pd.DataFrame` with
-        currency indexes in columns.
-        """
-        with mp.Pool() as pool, \
-                SharedMemoryManager() as smm:
-            shm = [smm.df2shm(df) for df in self._dfs]
-            results = _tqdm(
-                pool.imap(self._mp_task_run,
-                          ((df_batch, self._strategy, self._bt_kwargs, kwargs)
-                           for df_batch in _batch(shm))),
-                total=len(shm),
-                desc=self.__class__.__name__,
-            )
-            df = pd.DataFrame(list(chain(*results))).transpose()
-        return df
-
-    @staticmethod
-    def _mp_task_run(args):
-        data_shm, strategy, bt_kwargs, run_kwargs = args
-        dfs, shms = zip(*(SharedMemoryManager.shm2df(i) for i in data_shm))
-        try:
-            return [stats.filter(regex='^[^_]') if stats['# Trades'] else None
-                    for stats in (Backtest(df, strategy, **bt_kwargs).run(**run_kwargs)
-                                  for df in dfs)]
-        finally:
-            for shmem in chain(*shms):
-                shmem.close()
-
-    def optimize(self, **kwargs) -> pd.DataFrame:
-        """
-        Wraps `backtesting.backtesting.Backtest.optimize`, but returns `pd.DataFrame` with
-        currency indexes in columns.
-
-            heamap: pd.DataFrame = btm.optimize(...)
-            from backtesting.plot import plot_heatmaps
-            plot_heatmaps(heatmap.mean(axis=1))
-        """
-        heatmaps = []
-        # Simple loop since bt.optimize already does its own multiprocessing
-        for df in _tqdm(self._dfs, desc=self.__class__.__name__):
-            bt = Backtest(df, self._strategy, **self._bt_kwargs)
-            _best_stats, heatmap = bt.optimize(  # type: ignore
-                return_heatmap=True, return_optimization=False, **kwargs)
-            heatmaps.append(heatmap)
-        heatmap = pd.DataFrame(dict(zip(count(), heatmaps)))
-        return heatmap
 
 
 # NOTE: Don't put anything below this __all__ list

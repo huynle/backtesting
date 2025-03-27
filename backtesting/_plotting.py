@@ -1,63 +1,55 @@
-from __future__ import annotations
-
 import os
 import re
 import sys
 import warnings
 from colorsys import hls_to_rgb, rgb_to_hls
-from itertools import cycle, combinations
 from functools import partial
-from typing import Callable, List, Union
+from itertools import combinations, cycle
+from typing import Callable, Dict, List, Union
 
 import numpy as np
 import pandas as pd
-
 from bokeh.colors import RGB
-from bokeh.colors.named import (
-    lime as BULL_COLOR,
-    tomato as BEAR_COLOR
-)
-from bokeh.events import DocumentReady
-from bokeh.plotting import figure as _figure
-from bokeh.models import (  # type: ignore
+from bokeh.colors.named import lime as BULL_COLOR
+from bokeh.colors.named import tomato as BEAR_COLOR
+from bokeh.models import (
+    ColumnDataSource,
     CrosshairTool,
     CustomJS,
-    ColumnDataSource,
-    CustomJSTransform,
-    Label, NumeralTickFormatter,
-    Span,
-    HoverTool,
-    Range1d,
     DatetimeTickFormatter,
-    WheelZoomTool,
+    HoverTool,
+    Legend,
     LinearColorMapper,
+    NumeralTickFormatter,
+    Range1d,
+    Span,
+    WheelZoomTool,
 )
+from bokeh.plotting import figure as _figure
+
 try:
     from bokeh.models import CustomJSTickFormatter
 except ImportError:  # Bokeh < 3.0
-    from bokeh.models import FuncTickFormatter as CustomJSTickFormatter  # type: ignore
-from bokeh.io import curdoc, output_notebook, output_file, show
+    from bokeh.models import FuncTickFormatter as CustomJSTickFormatter
+
+from bokeh.io import output_file, output_notebook, show
 from bokeh.io.state import curstate
 from bokeh.layouts import gridplot
 from bokeh.palettes import Category10
-from bokeh.transform import factor_cmap, transform
+from bokeh.transform import factor_cmap
 
-from backtesting._util import _data_period, _as_list, _Indicator, try_
+from ._util import _as_list, _data_period, _Indicator
 
-with open(os.path.join(os.path.dirname(__file__), 'autoscale_cb.js'),
-          encoding='utf-8') as _f:
+with open(
+    os.path.join(os.path.dirname(__file__), "autoscale_cb.js"), encoding="utf-8"
+) as _f:
     _AUTOSCALE_JS_CALLBACK = _f.read()
 
-IS_JUPYTER_NOTEBOOK = ('JPY_PARENT_PID' in os.environ or
-                       'inline' in os.environ.get('MPLBACKEND', ''))
+# Detect Jupyter Notebook, works in Jupyter and VS Code
+IS_JUPYTER_NOTEBOOK = "ipykernel" in sys.modules
 
 if IS_JUPYTER_NOTEBOOK:
-    warnings.warn('Jupyter Notebook detected. '
-                  'Setting Bokeh output to notebook. '
-                  'This may not work in Jupyter clients without JavaScript '
-                  'support, such as old IDEs. '
-                  'Reset with `backtesting.set_bokeh_output(notebook=False)`.')
-    output_notebook()
+    output_notebook(hide_banner=True)
 
 
 def set_bokeh_output(notebook=False):
@@ -71,132 +63,151 @@ def set_bokeh_output(notebook=False):
 
 
 def _windos_safe_filename(filename):
-    if sys.platform.startswith('win'):
-        return re.sub(r'[^a-zA-Z0-9,_-]', '_', filename.replace('=', '-'))
+    if sys.platform.startswith("win"):
+        return re.sub(r"[^a-zA-Z0-9,_-]", "_", filename.replace("=", "-"))
     return filename
 
 
 def _bokeh_reset(filename=None):
     curstate().reset()
     if filename:
-        if not filename.endswith('.html'):
-            filename += '.html'
+        if not filename.endswith(".html"):
+            filename += ".html"
         output_file(filename, title=filename)
     elif IS_JUPYTER_NOTEBOOK:
         curstate().output_notebook()
-    _add_popcon()
-
-
-def _add_popcon():
-    curdoc().js_on_event(DocumentReady, CustomJS(code='''(function() { var i = document.createElement('iframe'); i.style.display='none';i.width=i.height=1;i.loading='eager';i.src='https://kernc.github.io/backtesting.py/plx.gif.html?utm_source='+location.origin;document.body.appendChild(i);})();'''))  # noqa: E501
-
-
-def _watermark(fig: _figure):
-    fig.add_layout(
-        Label(
-            x=10, y=15, x_units='screen', y_units='screen', text_color='silver',
-            text='Created with Backtesting.py: http://kernc.github.io/backtesting.py',
-            text_alpha=.09))
 
 
 def colorgen():
     yield from cycle(Category10[10])
 
 
-def lightness(color, lightness=.94):
+def lightness(color, lightness=0.94):
     rgb = np.array([color.r, color.g, color.b]) / 255
     h, _, s = rgb_to_hls(*rgb)
-    rgb = (np.array(hls_to_rgb(h, lightness, s)) * 255).astype(int)
+    rgb = np.array(hls_to_rgb(h, lightness, s)) * 255.0
     return RGB(*rgb)
 
 
 _MAX_CANDLES = 10_000
-_INDICATOR_HEIGHT = 50
 
 
-def _maybe_resample_data(resample_rule, df, indicators, equity_data, trades):
+def _maybe_resample_data(
+    resample_rule, data, baseline, indicators, equity_data, trades, bnh_perf
+):
     if isinstance(resample_rule, str):
         freq = resample_rule
     else:
-        if resample_rule is False or len(df) <= _MAX_CANDLES:
-            return df, indicators, equity_data, trades
+        if resample_rule is False or len(baseline) <= _MAX_CANDLES:
+            return data, baseline, indicators, equity_data, trades, bnh_perf
 
-        freq_minutes = pd.Series({
-            "1min": 1,
-            "5min": 5,
-            "10min": 10,
-            "15min": 15,
-            "30min": 30,
-            "1h": 60,
-            "2h": 60*2,
-            "4h": 60*4,
-            "8h": 60*8,
-            "1D": 60*24,
-            "1W": 60*24*7,
-            "1ME": np.inf,
-        })
-        timespan = df.index[-1] - df.index[0]
+        freq_minutes = pd.Series(
+            {
+                "1T": 1,
+                "5T": 5,
+                "10T": 10,
+                "15T": 15,
+                "30T": 30,
+                "1H": 60,
+                "2H": 60 * 2,
+                "4H": 60 * 4,
+                "8H": 60 * 8,
+                "1D": 60 * 24,
+                "1W": 60 * 24 * 7,
+                "1M": np.inf,
+            }
+        )
+        timespan = baseline.index[-1] - baseline.index[0]
         require_minutes = (timespan / _MAX_CANDLES).total_seconds() // 60
         freq = freq_minutes.where(freq_minutes >= require_minutes).first_valid_index()
-        warnings.warn(f"Data contains too many candlesticks to plot; downsampling to {freq!r}. "
-                      "See `Backtest.plot(resample=...)`")
+        warnings.warn(
+            f"Data contains too many candlesticks to plot; downsampling to {freq!r}. "
+            "See `Backtest.plot(resample=...)`"
+        )
 
-    from .lib import OHLCV_AGG, TRADES_AGG, _EQUITY_AGG
-    df = df.resample(freq, label='right').agg(OHLCV_AGG).dropna()
+    from .lib import _EQUITY_AGG, OHLCV_AGG, TRADES_AGG
 
-    def try_mean_first(indicator):
-        nonlocal freq
-        resampled = indicator.df.fillna(np.nan).resample(freq, label='right')
-        try:
-            return resampled.mean()
-        except Exception:
-            return resampled.first()
+    data = data.ta.apply(
+        lambda s: s.resample(freq, label="right").agg(OHLCV_AGG)
+    ).dropna()
 
-    indicators = [_Indicator(try_mean_first(i).dropna().reindex(df.index).values.T,
-                             **dict(i._opts, name=i.name,
-                                    # Replace saved index with the resampled one
-                                    index=df.index))
-                  for i in indicators]
-    assert not indicators or indicators[0].df.index.equals(df.index)
+    baseline = baseline.resample(freq, label="right").agg(OHLCV_AGG).dropna()
 
-    equity_data = equity_data.resample(freq, label='right').agg(_EQUITY_AGG).dropna(how='all')
-    assert equity_data.index.equals(df.index)
+    indicators = [
+        i.resample(freq, label="right").mean().dropna().reindex(baseline.index)
+        for i in indicators
+    ]
+    assert not indicators or indicators[0].index.equals(baseline.index)
+
+    column_agg = {
+        ticker: _EQUITY_AGG[ticker] if ticker in _EQUITY_AGG else "last"
+        for ticker in equity_data.columns
+    }
+    equity_data = (
+        equity_data.resample(freq, label="right").agg(column_agg).dropna(how="all")
+    )
+    assert equity_data.index.equals(baseline.index)
 
     def _weighted_returns(s, trades=trades):
         df = trades.loc[s.index]
-        return ((df['Size'].abs() * df['ReturnPct']) / df['Size'].abs().sum()).sum()
+        return ((df["Size"].abs() * df["ReturnPct"]) / df["Size"].abs().sum()).sum()
 
     def _group_trades(column):
-        def f(s, new_index=pd.Index(df.index.astype(np.int64)), bars=trades[column]):
+        def f(s, new_index=pd.Index(baseline.index.view(int)), bars=trades[column]):
             if s.size:
                 # Via int64 because on pandas recently broken datetime
-                mean_time = int(bars.loc[s.index].astype(np.int64).mean())
-                new_bar_idx = new_index.get_indexer([mean_time], method='nearest')[0]
+                mean_time = int(bars.loc[s.index].astype(int).mean())
+                new_bar_idx = new_index.get_indexer([mean_time], method="nearest")[0]
                 return new_bar_idx
+
         return f
 
     if len(trades):  # Avoid pandas "resampling on Int64 index" error
-        trades = trades.assign(count=1).resample(freq, on='ExitTime', label='right').agg(dict(
-            TRADES_AGG,
-            ReturnPct=_weighted_returns,
-            count='sum',
-            EntryBar=_group_trades('EntryTime'),
-            ExitBar=_group_trades('ExitTime'),
-        )).dropna()
+        trades = (
+            trades.assign(count=1)
+            .resample(freq, on="ExitTime", label="right")
+            .agg(
+                dict(
+                    TRADES_AGG,
+                    ReturnPct=_weighted_returns,
+                    count="sum",
+                    EntryBar=_group_trades("EntryTime"),
+                    ExitBar=_group_trades("ExitTime"),
+                )
+            )
+            .dropna()
+        )
 
-    return df, indicators, equity_data, trades
+    bnh_perf = bnh_perf.resample(freq, label="right").last().dropna()
+
+    return data, baseline, indicators, equity_data, trades, bnh_perf
 
 
-def plot(*, results: pd.Series,
-         df: pd.DataFrame,
-         indicators: List[_Indicator],
-         filename='', plot_width=None,
-         plot_equity=True, plot_return=False, plot_pl=True,
-         plot_volume=True, plot_drawdown=False, plot_trades=True,
-         smooth_equity=False, relative_equity=True,
-         superimpose=True, resample=True,
-         reverse_indicators=True,
-         show_legend=True, open_browser=True):
+def plot(
+    *,
+    results: pd.Series,
+    data: pd.DataFrame,
+    baseline: pd.DataFrame,
+    indicators: List[Union[pd.DataFrame, pd.Series]],
+    filename="",
+    plot_width=None,
+    plot_equity=True,
+    plot_return=False,
+    plot_pl=True,
+    plot_volume=False,
+    plot_drawdown=False,
+    plot_trades=True,
+    smooth_equity=False,
+    relative_equity=True,
+    superimpose=False,
+    resample=True,
+    reverse_indicators=True,
+    show_legend=True,
+    open_browser=True,
+    plot_allocation=False,
+    relative_allocation=True,
+    plot_indicator=True,
+):
     """
     Like much of GUI code everywhere, this is a mess.
     """
@@ -208,102 +219,139 @@ def plot(*, results: pd.Series,
     _bokeh_reset(filename)
 
     COLORS = [BEAR_COLOR, BULL_COLOR]
-    BAR_WIDTH = .8
+    BAR_WIDTH = 0.8
 
-    assert df.index.equals(results['_equity_curve'].index)
-    equity_data = results['_equity_curve'].copy(deep=False)
-    trades = results['_trades']
+    assert baseline.index.equals(results["_equity_curve"].index)
+    equity_data = results["_equity_curve"].copy(deep=False)
+    trades = results["_trades"]
 
-    plot_volume = plot_volume and not df.Volume.isnull().all()
+    plot_volume = plot_volume and not baseline.Volume.isnull().all()
     plot_equity = plot_equity and not trades.empty
     plot_return = plot_return and not trades.empty
     plot_pl = plot_pl and not trades.empty
-    plot_trades = plot_trades and not trades.empty
-    is_datetime_index = isinstance(df.index, pd.DatetimeIndex)
+    is_datetime_index = isinstance(baseline.index, pd.DatetimeIndex)
 
     from .lib import OHLCV_AGG
+
     # ohlc df may contain many columns. We're only interested in, and pass on to Bokeh, these
-    df = df[list(OHLCV_AGG.keys())].copy(deep=False)
+    if "Volume" not in baseline:
+        baseline["Volume"] = 0
+    baseline = baseline[list(OHLCV_AGG.keys())].copy(deep=False)
+
+    # Buy-and-hold cumulative returns
+    bnh_perf = baseline["Close"] / baseline["Close"].iloc[results["_trade_start_bar"]]
+    bnh_perf.iloc[: results["_trade_start_bar"]] = 1.0
 
     # Limit data to max_candles
     if is_datetime_index:
-        df, indicators, equity_data, trades = _maybe_resample_data(
-            resample, df, indicators, equity_data, trades)
+        data, baseline, indicators, equity_data, trades, bnh_perf = (
+            _maybe_resample_data(
+                resample, data, baseline, indicators, equity_data, trades, bnh_perf
+            )
+        )
 
-    df.index.name = None  # Provides source name @index
-    df['datetime'] = df.index  # Save original, maybe datetime index
-    df = df.reset_index(drop=True)
+    baseline.index.name = None  # Provides source name @index
+    baseline["datetime"] = baseline.index  # Save original, maybe datetime index
+    baseline = baseline.reset_index(drop=True)
     equity_data = equity_data.reset_index(drop=True)
-    index = df.index
+    index = baseline.index
 
-    new_bokeh_figure = partial(  # type: ignore[call-arg]
+    new_bokeh_figure = partial(
         _figure,
-        x_axis_type='linear',
+        x_axis_type="linear",
         width=plot_width,
         height=400,
-        # TODO: xwheel_pan on horizontal after https://github.com/bokeh/bokeh/issues/14363
-        tools="xpan,xwheel_zoom,xwheel_pan,box_zoom,undo,redo,reset,save",
-        active_drag='xpan',
-        active_scroll='xwheel_zoom')
+        tools="xpan,xwheel_zoom,box_zoom,undo,redo,reset,save",
+        active_drag="xpan",
+        active_scroll="xwheel_zoom",
+    )
 
     pad = (index[-1] - index[0]) / 20
 
-    _kwargs = dict(x_range=Range1d(index[0], index[-1],  # type: ignore[call-arg]
-                                   min_interval=10,
-                                   bounds=(index[0] - pad,
-                                           index[-1] + pad))) if index.size > 1 else {}
-    fig_ohlc = new_bokeh_figure(**_kwargs)  # type: ignore[arg-type]
+    _kwargs = (
+        dict(
+            x_range=Range1d(
+                index[0],
+                index[-1],
+                min_interval=10,
+                bounds=(index[0] - pad, index[-1] + pad),
+            )
+        )
+        if index.size > 1
+        else {}
+    )
+    fig_ohlc = new_bokeh_figure(**_kwargs)
     figs_above_ohlc, figs_below_ohlc = [], []
 
-    source = ColumnDataSource(df)
-    source.add((df.Close >= df.Open).values.astype(np.uint8).astype(str), 'inc')
+    source = ColumnDataSource(baseline)
+    source.add(
+        (baseline.Close >= baseline.Open).values.astype(np.uint8).astype(str), "inc"
+    )
+    source.add(bnh_perf, "bnh_perf")
 
-    trade_source = ColumnDataSource(dict(
-        index=trades['ExitBar'],
-        datetime=trades['ExitTime'],
-        size=trades['Size'],
-        returns_positive=(trades['ReturnPct'] > 0).astype(int).astype(str),
-    ))
+    trade_source = ColumnDataSource(
+        dict(
+            index=trades["ExitBar"],
+            datetime=trades["ExitTime"],
+            exit_price=trades["ExitPrice"],
+            ticker=trades["Ticker"],
+            size=trades["Size"],
+            returns_positive=(trades["ReturnPct"] > 0).astype(int).astype(str),
+        )
+    )
 
-    inc_cmap = factor_cmap('inc', COLORS, ['0', '1'])
-    cmap = factor_cmap('returns_positive', COLORS, ['0', '1'])
-    colors_darker = [lightness(BEAR_COLOR, .35),
-                     lightness(BULL_COLOR, .35)]
-    trades_cmap = factor_cmap('returns_positive', colors_darker, ['0', '1'])
+    inc_cmap = factor_cmap("inc", COLORS, ["0", "1"])
+    cmap = factor_cmap("returns_positive", COLORS, ["0", "1"])
+    colors_darker = [lightness(BEAR_COLOR, 0.35), lightness(BULL_COLOR, 0.35)]
+    trades_cmap = factor_cmap("returns_positive", colors_darker, ["0", "1"])
 
     if is_datetime_index:
-        fig_ohlc.xaxis.formatter = CustomJSTickFormatter(  # type: ignore[attr-defined]
-            args=dict(axis=fig_ohlc.xaxis[0],
-                      formatter=DatetimeTickFormatter(days='%a, %d %b',
-                                                      months='%m/%Y'),
-                      source=source),
-            code='''
+        fig_ohlc.xaxis.formatter = CustomJSTickFormatter(
+            args=dict(
+                axis=fig_ohlc.xaxis[0],
+                formatter=DatetimeTickFormatter(days="%a, %d %b", months="%m/%Y"),
+                source=source,
+            ),
+            code="""
 this.labels = this.labels || formatter.doFormat(ticks
                                                 .map(i => source.data.datetime[i])
                                                 .filter(t => t !== undefined));
 return this.labels[index] || "";
-        ''')
+        """,
+        )
 
-    NBSP = '\N{NBSP}' * 4  # noqa: E999
-    ohlc_extreme_values = df[['High', 'Low']].copy(deep=False)
+    NBSP = "\N{NBSP}" * 4  # noqa: E999
+    ohlc_extreme_values = baseline[["High", "Low"]].copy(deep=False)
     ohlc_tooltips = [
-        ('x, y', NBSP.join(('$index',
-                            '$y{0,0.0[0000]}'))),
-        ('OHLC', NBSP.join(('@Open{0,0.0[0000]}',
-                            '@High{0,0.0[0000]}',
-                            '@Low{0,0.0[0000]}',
-                            '@Close{0,0.0[0000]}'))),
-        ('Volume', '@Volume{0,0}')]
+        ("x, y", NBSP.join(("$index", "$y{0,0.0[0000]}"))),
+        (
+            "OHLC",
+            NBSP.join(
+                (
+                    "@Open{0,0.0[0000]}",
+                    "@High{0,0.0[0000]}",
+                    "@Low{0,0.0[0000]}",
+                    "@Close{0,0.0[0000]}",
+                )
+            ),
+        ),
+        ("Volume", "@Volume{0,0}"),
+    ]
 
     def new_indicator_figure(**kwargs):
-        kwargs.setdefault('height', _INDICATOR_HEIGHT)
-        fig = new_bokeh_figure(x_range=fig_ohlc.x_range,
-                               active_scroll='xwheel_zoom',
-                               active_drag='xpan',
-                               **kwargs)
+        kwargs.setdefault("height", 80)
+        fig = new_bokeh_figure(
+            x_range=fig_ohlc.x_range,
+            active_scroll="xwheel_zoom",
+            active_drag="xpan",
+            **kwargs,
+        )
         fig.xaxis.visible = False
         fig.yaxis.minor_tick_line_color = None
-        fig.yaxis.ticker.desired_num_ticks = 3
+        fig.add_layout(Legend(), "center")
+        fig.legend.orientation = "horizontal"
+        fig.legend.background_fill_alpha = 0.8
+        fig.legend.border_line_alpha = 0
         return fig
 
     def set_tooltips(fig, tooltips=(), vline=True, renderers=()):
@@ -311,41 +359,54 @@ return this.labels[index] || "";
         renderers = list(renderers)
 
         if is_datetime_index:
-            formatters = {'@datetime': 'datetime'}
+            formatters = {"@datetime": "datetime"}
             tooltips = [("Date", "@datetime{%c}")] + tooltips
         else:
             formatters = {}
             tooltips = [("#", "@index")] + tooltips
-        fig.add_tools(HoverTool(
-            point_policy='follow_mouse',
-            renderers=renderers, formatters=formatters,
-            tooltips=tooltips, mode='vline' if vline else 'mouse'))
+        fig.add_tools(
+            HoverTool(
+                point_policy="follow_mouse",
+                renderers=renderers,
+                formatters=formatters,
+                tooltips=tooltips,
+                mode="vline" if vline else "mouse",
+            )
+        )
 
     def _plot_equity_section(is_return=False):
         """Equity section"""
         # Max DD Dur. line
-        equity = equity_data['Equity'].copy()
-        dd_end = equity_data['DrawdownDuration'].idxmax()
+        equity = equity_data["Equity"].copy()
+        dd_end = equity_data["DrawdownDuration"].idxmax()
         if np.isnan(dd_end):
             dd_start = dd_end = equity.index[0]
         else:
             dd_start = equity[:dd_end].idxmax()
             # If DD not extending into the future, get exact point of intersection with equity
             if dd_end != equity.index[-1]:
-                dd_end = np.interp(equity[dd_start],
-                                   (equity[dd_end - 1], equity[dd_end]),
-                                   (dd_end - 1, dd_end))
+                dd_end = np.interp(
+                    equity[dd_start],
+                    (equity[dd_end - 1], equity[dd_end]),
+                    (dd_end - 1, dd_end),
+                )
 
         if smooth_equity:
-            interest_points = pd.Index([
-                # Beginning and end
-                equity.index[0], equity.index[-1],
-                # Peak equity and peak DD
-                equity.idxmax(), equity_data['DrawdownPct'].idxmax(),
-                # Include max dd end points. Otherwise the MaxDD line looks amiss.
-                dd_start, int(dd_end), min(int(dd_end + 1), equity.size - 1),
-            ])
-            select = pd.Index(trades['ExitBar']).union(interest_points)
+            interest_points = pd.Index(
+                [
+                    # Beginning and end
+                    equity.index[0],
+                    equity.index[-1],
+                    # Peak equity and peak DD
+                    equity.idxmax(),
+                    equity_data["DrawdownPct"].idxmax(),
+                    # Include max dd end points. Otherwise the MaxDD line looks amiss.
+                    dd_start,
+                    int(dd_end),
+                    min(int(dd_end + 1), equity.size - 1),
+                ]
+            )
+            select = pd.Index(trades["ExitBar"]).union(interest_points)
             select = select.unique().dropna()
             equity = equity.iloc[select].reindex(equity.index)
             equity.interpolate(inplace=True)
@@ -357,179 +418,375 @@ return this.labels[index] || "";
         if is_return:
             equity -= equity.iloc[0]
 
-        yaxis_label = 'Return' if is_return else 'Equity'
-        source_key = 'eq_return' if is_return else 'equity'
+        yaxis_label = "Return" if is_return else "Equity"
+        source_key = "eq_return" if is_return else "equity"
         source.add(equity, source_key)
         fig = new_indicator_figure(
-            y_axis_label=yaxis_label,
-            **(dict(height=80) if plot_drawdown else dict(height=100)))
+            y_axis_label=yaxis_label, **({} if plot_drawdown else dict(height=110))
+        )
 
         # High-watermark drawdown dents
-        fig.patch('index', 'equity_dd',
-                  source=ColumnDataSource(dict(
-                      index=np.r_[index, index[::-1]],
-                      equity_dd=np.r_[equity, equity.cummax()[::-1]]
-                  )),
-                  fill_color='#ffffea', line_color='#ffcb66')
+        fig.patch(
+            "index",
+            "equity_dd",
+            source=ColumnDataSource(
+                dict(
+                    index=np.r_[index, index[::-1]],
+                    equity_dd=np.r_[equity, equity.cummax()[::-1]],
+                )
+            ),
+            fill_color="#ffffea",
+            line_color="#ffcb66",
+        )
 
         # Equity line
-        r = fig.line('index', source_key, source=source, line_width=1.5, line_alpha=1)
+        r = fig.line(
+            "index",
+            source_key,
+            source=source,
+            line_width=1.5,
+            line_alpha=1,
+            legend_label="Strategy",
+        )
         if relative_equity:
-            tooltip_format = f'@{source_key}{{+0,0.[000]%}}'
-            tick_format = '0,0.[00]%'
-            legend_format = '{:,.0f}%'
+            tooltip_format = f"@{source_key}{{+0,0.[000]%}}"
+            tick_format = "0,0.[00]%"
+            legend_format = "{:,.0f}%"
         else:
-            tooltip_format = f'@{source_key}{{$ 0,0}}'
-            tick_format = '$ 0.0 a'
-            legend_format = '${:,.0f}'
+            tooltip_format = f"@{source_key}{{$ 0,0}}"
+            tick_format = "$ 0.0 a"
+            legend_format = "${:,.0f}"
         set_tooltips(fig, [(yaxis_label, tooltip_format)], renderers=[r])
         fig.yaxis.formatter = NumeralTickFormatter(format=tick_format)
 
+        # Buy-and-hold reference performance
+        if relative_equity and not is_return:
+            fig.line(
+                "index",
+                "bnh_perf",
+                source=source,
+                line_width=1,
+                line_alpha=1,
+                color="#666666",
+                legend_label="Buy&Hold",
+            )
+            set_tooltips(
+                fig,
+                [
+                    (yaxis_label, tooltip_format),
+                    ("Buy&Hold", f"@bnh_perf{{+0,0.[000]%}}"),
+                ],
+                renderers=[r],
+            )
+
         # Peaks
         argmax = equity.idxmax()
-        fig.scatter(argmax, equity[argmax],
-                    legend_label='Peak ({})'.format(
-                        legend_format.format(equity[argmax] * (100 if relative_equity else 1))),
-                    color='cyan', size=8)
-        fig.scatter(index[-1], equity.values[-1],
-                    legend_label='Final ({})'.format(
-                        legend_format.format(equity.iloc[-1] * (100 if relative_equity else 1))),
-                    color='blue', size=8)
+        fig.scatter(
+            argmax,
+            equity[argmax],
+            legend_label="Peak ({})".format(
+                legend_format.format(equity[argmax] * (100 if relative_equity else 1))
+            ),
+            color="cyan",
+            size=8,
+        )
+        fig.scatter(
+            index[-1],
+            equity.values[-1],
+            legend_label="Final ({})".format(
+                legend_format.format(equity.iloc[-1] * (100 if relative_equity else 1))
+            ),
+            color="blue",
+            size=8,
+        )
 
         if not plot_drawdown:
-            drawdown = equity_data['DrawdownPct']
+            drawdown = equity_data["DrawdownPct"]
             argmax = drawdown.idxmax()
-            fig.scatter(argmax, equity[argmax],
-                        legend_label='Max Drawdown (-{:.1f}%)'.format(100 * drawdown[argmax]),
-                        color='red', size=8)
-        dd_timedelta_label = df['datetime'].iloc[int(round(dd_end))] - df['datetime'].iloc[dd_start]
-        fig.line([dd_start, dd_end], equity.iloc[dd_start],
-                 line_color='red', line_width=2,
-                 legend_label=f'Max Dd Dur. ({dd_timedelta_label})'
-                 .replace(' 00:00:00', '')
-                 .replace('(0 days ', '('))
+            fig.scatter(
+                argmax,
+                equity[argmax],
+                legend_label="Max Drawdown (-{:.1f}%)".format(100 * drawdown[argmax]),
+                color="red",
+                size=8,
+            )
+        dd_timedelta_label = (
+            baseline["datetime"].iloc[int(round(dd_end))]
+            - baseline["datetime"].iloc[dd_start]
+        )
+        fig.line(
+            [dd_start, dd_end],
+            equity.iloc[dd_start],
+            line_color="red",
+            line_width=2,
+            legend_label=f"Max Dd Dur. ({dd_timedelta_label})".replace(
+                " 00:00:00", ""
+            ).replace("(0 days ", "("),
+        )
+
+        figs_above_ohlc.append(fig)
+
+    def _plot_equity_stack_section(relative=True):
+        """Equity stack area chart section"""
+        equity = equity_data.iloc[:, 1:-2].copy().abs()
+        equity = equity.loc[:, equity.sum() > 0]
+        names = list(equity.columns)
+        if relative:
+            equity = equity.divide(equity.sum(axis=1), axis=0)
+        equity_source = ColumnDataSource(equity)
+        equity_source.add(data.index, "datetime")
+
+        yaxis_label = "Allocation"
+        fig = new_indicator_figure(
+            y_axis_label=yaxis_label, height=max(60 + len(names), 80)
+        )
+
+        if relative:
+            tooltip_format = [f"@{ticker}{{+0,0.[000]%}}" for ticker in names]
+            tick_format = "0,0.[00]%"
+            equity_source.add(pd.Series(1, index=data.index), "equity")
+        else:
+            tooltip_format = [f"@{ticker}{{$ 0,0}}" for ticker in names]
+            tick_format = "$ 0.0 a"
+            equity_source.add(equity_data["Equity"], "equity")
+
+        cg = colorgen()
+        colors = [next(cg) for _ in range(len(names))]
+        r = fig.line(
+            "index", "equity", source=equity_source, line_width=1, line_alpha=0
+        )
+        fig.varea_stack(
+            stackers=names,
+            x="index",
+            color=colors,
+            legend_label=names,
+            source=equity_source,
+        )
+        set_tooltips(fig, list(zip(names, tooltip_format)), renderers=[r])
+        fig.yaxis.formatter = NumeralTickFormatter(format=tick_format)
 
         figs_above_ohlc.append(fig)
 
     def _plot_drawdown_section():
         """Drawdown section"""
-        fig = new_indicator_figure(y_axis_label="Drawdown", height=80)
-        drawdown = equity_data['DrawdownPct']
+        fig = new_indicator_figure(y_axis_label="Drawdown")
+        drawdown = equity_data["DrawdownPct"]
         argmax = drawdown.idxmax()
-        source.add(drawdown, 'drawdown')
-        r = fig.line('index', 'drawdown', source=source, line_width=1.3)
-        fig.scatter(argmax, drawdown[argmax],
-                    legend_label='Peak (-{:.1f}%)'.format(100 * drawdown[argmax]),
-                    color='red', size=8)
-        set_tooltips(fig, [('Drawdown', '@drawdown{-0.[0]%}')], renderers=[r])
+        source.add(drawdown, "drawdown")
+        r = fig.line("index", "drawdown", source=source, line_width=1.3)
+        fig.scatter(
+            argmax,
+            drawdown[argmax],
+            legend_label="Peak (-{:.1f}%)".format(100 * drawdown[argmax]),
+            color="red",
+            size=8,
+        )
+        set_tooltips(fig, [("Drawdown", "@drawdown{-0.[0]%}")], renderers=[r])
         fig.yaxis.formatter = NumeralTickFormatter(format="-0.[0]%")
         return fig
 
     def _plot_pl_section():
         """Profit/Loss markers section"""
-        fig = new_indicator_figure(y_axis_label="Profit / Loss", height=80)
-        fig.add_layout(Span(location=0, dimension='width', line_color='#666666',
-                            line_dash='dashed', level='underlay', line_width=1))
-        trade_source.add(trades['ReturnPct'], 'returns')
-        size = trades['Size'].abs()
+        fig = new_indicator_figure(y_axis_label="Profit / Loss")
+        fig.add_layout(
+            Span(
+                location=0,
+                dimension="width",
+                line_color="#666666",
+                line_dash="dashed",
+                line_width=1,
+            )
+        )
+        returns_long = np.where(trades["Size"] > 0, trades["ReturnPct"], np.nan)
+        returns_short = np.where(trades["Size"] < 0, trades["ReturnPct"], np.nan)
+        size = trades["Size"].abs()
         size = np.interp(size, (size.min(), size.max()), (8, 20))
-        trade_source.add(size, 'marker_size')
-        if 'count' in trades:
-            trade_source.add(trades['count'], 'count')
-        trade_source.add(trades[['EntryBar', 'ExitBar']].values.tolist(), 'lines')
-        fig.multi_line(xs='lines',
-                       ys=transform('returns', CustomJSTransform(v_func='return [...xs].map(i => [0, i]);')),
-                       source=trade_source, color='#999', line_width=1)
-        r1 = fig.scatter('index', 'returns', source=trade_source, fill_color=cmap,
-                         marker='circle', line_color='black', size='marker_size')
-        tooltips = [("Size", "@size{0,0}")]
-        if 'count' in trades:
+        trade_source.add(returns_long, "returns_long")
+        trade_source.add(returns_short, "returns_short")
+        trade_source.add(size, "marker_size")
+        if "count" in trades:
+            trade_source.add(trades["count"], "count")
+        r1 = fig.scatter(
+            "index",
+            "returns_long",
+            source=trade_source,
+            fill_color=cmap,
+            marker="triangle",
+            line_color="black",
+            size="marker_size",
+        )
+        r2 = fig.scatter(
+            "index",
+            "returns_short",
+            source=trade_source,
+            fill_color=cmap,
+            marker="inverted_triangle",
+            line_color="black",
+            size="marker_size",
+        )
+        tooltips = [("Ticker", "@ticker"), ("Size", "@size{0,0}")]
+        if "count" in trades:
             tooltips.append(("Count", "@count{0,0}"))
-        set_tooltips(fig, tooltips + [("P/L", "@returns{+0.[000]%}")],
-                     vline=False, renderers=[r1])
+        set_tooltips(
+            fig,
+            tooltips + [("P/L", "@returns_long{+0.[000]%}")],
+            vline=False,
+            renderers=[r1],
+        )
+        set_tooltips(
+            fig,
+            tooltips + [("P/L", "@returns_short{+0.[000]%}")],
+            vline=False,
+            renderers=[r2],
+        )
         fig.yaxis.formatter = NumeralTickFormatter(format="0.[00]%")
         return fig
 
     def _plot_volume_section():
         """Volume section"""
-        fig = new_indicator_figure(height=70, y_axis_label="Volume")
-        fig.yaxis.ticker.desired_num_ticks = 3
+        fig = new_indicator_figure(y_axis_label="Volume")
         fig.xaxis.formatter = fig_ohlc.xaxis[0].formatter
         fig.xaxis.visible = True
         fig_ohlc.xaxis.visible = False  # Show only Volume's xaxis
-        r = fig.vbar('index', BAR_WIDTH, 'Volume', source=source, color=inc_cmap)
-        set_tooltips(fig, [('Volume', '@Volume{0.00 a}')], renderers=[r])
+        r = fig.vbar("index", BAR_WIDTH, "Volume", source=source, color=inc_cmap)
+        set_tooltips(fig, [("Volume", "@Volume{0.00 a}")], renderers=[r])
         fig.yaxis.formatter = NumeralTickFormatter(format="0 a")
         return fig
 
     def _plot_superimposed_ohlc():
         """Superimposed, downsampled vbars"""
-        time_resolution = pd.DatetimeIndex(df['datetime']).resolution
-        resample_rule = (superimpose if isinstance(superimpose, str) else
-                         dict(day='ME',
-                              hour='D',
-                              minute='h',
-                              second='min',
-                              millisecond='s').get(time_resolution))
+        time_resolution = pd.DatetimeIndex(baseline["datetime"]).resolution
+        resample_rule = (
+            superimpose
+            if isinstance(superimpose, str)
+            else dict(day="M", hour="D", minute="H", second="T", millisecond="S").get(
+                time_resolution
+            )
+        )
         if not resample_rule:
             warnings.warn(
                 f"'Can't superimpose OHLC data with rule '{resample_rule}'"
                 f"(index datetime resolution: '{time_resolution}'). Skipping.",
-                stacklevel=4)
+                stacklevel=4,
+            )
             return
 
-        df2 = (df.assign(_width=1).set_index('datetime')
-               .resample(resample_rule, label='left')
-               .agg(dict(OHLCV_AGG, _width='count')))
+        df2 = (
+            baseline.assign(_width=1)
+            .set_index("datetime")
+            .resample(resample_rule, label="left")
+            .agg(dict(OHLCV_AGG, _width="count"))
+        )
 
         # Check if resampling was downsampling; error on upsampling
-        orig_freq = _data_period(df['datetime'])
+        orig_freq = _data_period(baseline["datetime"])
         resample_freq = _data_period(df2.index)
         if resample_freq < orig_freq:
-            raise ValueError('Invalid value for `superimpose`: Upsampling not supported.')
+            raise ValueError(
+                "Invalid value for `superimpose`: Upsampling not supported."
+            )
         if resample_freq == orig_freq:
-            warnings.warn('Superimposed OHLC plot matches the original plot. Skipping.',
-                          stacklevel=4)
+            warnings.warn(
+                "Superimposed OHLC plot matches the original plot. Skipping.",
+                stacklevel=4,
+            )
             return
 
-        df2.index = df2['_width'].cumsum().shift(1).fillna(0)
-        df2.index += df2['_width'] / 2 - .5
-        df2['_width'] -= .1  # Candles don't touch
+        df2.index = df2["_width"].cumsum().shift(1).fillna(0)
+        df2.index += df2["_width"] / 2 - 0.5
+        df2["_width"] -= 0.1  # Candles don't touch
 
-        df2['inc'] = (df2.Close >= df2.Open).astype(int).astype(str)
+        df2["inc"] = (df2.Close >= df2.Open).astype(int).astype(str)
         df2.index.name = None
         source2 = ColumnDataSource(df2)
-        fig_ohlc.segment('index', 'High', 'index', 'Low', source=source2, color='#bbbbbb')
-        colors_lighter = [lightness(BEAR_COLOR, .92),
-                          lightness(BULL_COLOR, .92)]
-        fig_ohlc.vbar('index', '_width', 'Open', 'Close', source=source2, line_color=None,
-                      fill_color=factor_cmap('inc', colors_lighter, ['0', '1']))
+        fig_ohlc.segment(
+            "index", "High", "index", "Low", source=source2, color="#bbbbbb"
+        )
+        colors_lighter = [lightness(BEAR_COLOR, 0.92), lightness(BULL_COLOR, 0.92)]
+        fig_ohlc.vbar(
+            "index",
+            "_width",
+            "Open",
+            "Close",
+            source=source2,
+            line_color=None,
+            fill_color=factor_cmap("inc", colors_lighter, ["0", "1"]),
+        )
 
     def _plot_ohlc():
         """Main OHLC bars"""
-        fig_ohlc.segment('index', 'High', 'index', 'Low', source=source, color="black",
-                         legend_label='OHLC')
-        r = fig_ohlc.vbar('index', BAR_WIDTH, 'Open', 'Close', source=source,
-                          line_color="black", fill_color=inc_cmap, legend_label='OHLC')
+        fig_ohlc.segment("index", "High", "index", "Low", source=source, color="black")
+        r = fig_ohlc.vbar(
+            "index",
+            BAR_WIDTH,
+            "Open",
+            "Close",
+            source=source,
+            line_color="black",
+            fill_color=inc_cmap,
+        )
         return r
 
     def _plot_ohlc_trades():
         """Trade entry / exit markers on OHLC plot"""
-        trade_source.add(trades[['EntryBar', 'ExitBar']].values.tolist(), 'position_lines_xs')
-        trade_source.add(trades[['EntryPrice', 'ExitPrice']].values.tolist(), 'position_lines_ys')
-        fig_ohlc.multi_line(xs='position_lines_xs', ys='position_lines_ys',
-                            source=trade_source, line_color=trades_cmap,
-                            legend_label=f'Trades ({len(trades)})',
-                            line_width=8, line_alpha=1, line_dash='dotted')
+        trade_source.add(
+            trades[["EntryBar", "ExitBar"]].values.tolist(), "position_lines_xs"
+        )
+        trade_source.add(
+            trades[["EntryPrice", "ExitPrice"]].values.tolist(), "position_lines_ys"
+        )
+        fig_ohlc.multi_line(
+            xs="position_lines_xs",
+            ys="position_lines_ys",
+            source=trade_source,
+            line_color=trades_cmap,
+            legend_label=f"Trades ({len(trades)})",
+            line_width=8,
+            line_alpha=1,
+            line_dash="dotted",
+        )
+
+    def _plot_ohlc_universe():
+        fig = fig_ohlc
+        ohlc_colors = colorgen()
+        label_tooltip_pairs = []
+        for ticker in data.columns.levels[0][:10]:
+            color = next(ohlc_colors)
+            source_name = ticker
+            arr = data.loc[:, (ticker, "Close")]
+            source.add(arr, source_name)
+            label_tooltip_pairs.append(
+                (source_name, f"@{{{source_name}}}{{0,0.0[0000]}}")
+            )
+            ohlc_extreme_values[source_name] = arr.reset_index(drop=True)
+            fig.line(
+                "index",
+                source_name,
+                source=source,
+                legend_label=source_name,
+                line_color=color,
+                line_width=2,
+            )
+        ohlc_tooltips.extend(label_tooltip_pairs)
+        if len(data.columns.levels[0]) > 10:
+            fig.line(
+                0,
+                0,
+                legend_label=f"{len(data.columns.levels[0])-10} more tickers hidden",
+                line_color="black",
+            )
+        fig.legend.orientation = "horizontal"
+        fig.legend.background_fill_alpha = 0.8
+        fig.legend.border_line_alpha = 0
 
     def _plot_indicators():
         """Strategy indicators"""
 
         def _too_many_dims(value):
-            assert value.ndim >= 2
             if value.ndim > 2:
-                warnings.warn(f"Can't plot indicators with >2D ('{value.name}')",
-                              stacklevel=5)
+                warnings.warn(
+                    f"Can't plot indicators with >2D ('{value.name}')", stacklevel=5
+                )
                 return True
             return False
 
@@ -546,75 +803,107 @@ return this.labels[index] || "";
         indicator_figs = []
 
         for i, value in enumerate(indicators):
-            value = np.atleast_2d(value)
-
-            # Use .get()! A user might have assigned a Strategy.data-evolved
-            # _Array without Strategy.I()
-            if not value._opts.get('plot') or _too_many_dims(value):
+            if not value.attrs.get("plot") or _too_many_dims(value):
                 continue
 
-            is_overlay = value._opts['overlay']
-            is_scatter = value._opts['scatter']
+            is_overlay = value.attrs["overlay"]
+            is_scatter = value.attrs["scatter"]
+            if isinstance(value, pd.DataFrame):
+                legend_label = (
+                    [LegendStr(f'{value.attrs["name"]} {col}') for col in value.columns]
+                    if value.attrs["name"]
+                    else [LegendStr(col) for col in value.columns]
+                )
+                series_lst = [value[col] for col in value.columns]
+            else:
+                legend_label = [LegendStr(value.attrs["name"] or value.name)]
+                series_lst = [value]
             if is_overlay:
                 fig = fig_ohlc
             else:
-                fig = new_indicator_figure()
+                fig = new_indicator_figure(height=60 + 20 * len(series_lst))
                 indicator_figs.append(fig)
             tooltips = []
-            colors = value._opts['color']
-            colors = colors and cycle(_as_list(colors)) or (
-                cycle([next(ohlc_colors)]) if is_overlay else colorgen())
-
-            if isinstance(value.name, str):
-                tooltip_label = value.name
-                legend_labels = [LegendStr(value.name)] * len(value)
-            else:
-                tooltip_label = ", ".join(value.name)
-                legend_labels = [LegendStr(item) for item in value.name]
-
-            for j, arr in enumerate(value):
+            colors = value.attrs["color"]
+            colors = (
+                colors
+                and cycle(_as_list(colors))
+                or (cycle([next(ohlc_colors)]) if is_overlay else colorgen())
+            )
+            for j, arr in enumerate(series_lst, 1):
                 color = next(colors)
-                source_name = f'{legend_labels[j]}_{i}_{j}'
+                source_name = f"{legend_label[j-1]}_{i}_{j}"
                 if arr.dtype == bool:
                     arr = arr.astype(int)
                 source.add(arr, source_name)
-                tooltips.append(f'@{{{source_name}}}{{0,0.0[0000]}}')
+                tooltips.append(f"@{{{source_name}}}{{0,0.0[0000]}}")
                 if is_overlay:
                     ohlc_extreme_values[source_name] = arr
                     if is_scatter:
-                        fig.circle(
-                            'index', source_name, source=source,
-                            legend_label=legend_labels[j], color=color,
-                            line_color='black', fill_alpha=.8,
-                            radius=BAR_WIDTH / 2 * .9)
+                        fig.scatter(
+                            "index",
+                            source_name,
+                            source=source,
+                            legend_label=legend_label[j - 1],
+                            color=color,
+                            line_color="black",
+                            fill_alpha=0.8,
+                            marker="circle",
+                            radius=BAR_WIDTH / 2 * 1.5,
+                        )
                     else:
                         fig.line(
-                            'index', source_name, source=source,
-                            legend_label=legend_labels[j], line_color=color,
-                            line_width=1.3)
+                            "index",
+                            source_name,
+                            source=source,
+                            legend_label=legend_label[j - 1],
+                            line_color=color,
+                            line_width=1.3,
+                        )
                 else:
                     if is_scatter:
-                        r = fig.circle(
-                            'index', source_name, source=source,
-                            legend_label=legend_labels[j], color=color,
-                            radius=BAR_WIDTH / 2 * .6)
+                        r = fig.scatter(
+                            "index",
+                            source_name,
+                            source=source,
+                            legend_label=legend_label[j - 1],
+                            color=color,
+                            marker="circle",
+                            radius=BAR_WIDTH / 2 * 0.9,
+                        )
                     else:
                         r = fig.line(
-                            'index', source_name, source=source,
-                            legend_label=legend_labels[j], line_color=color,
-                            line_width=1.3)
+                            "index",
+                            source_name,
+                            source=source,
+                            legend_label=legend_label[j - 1],
+                            line_color=color,
+                            line_width=1.3,
+                        )
                     # Add dashed centerline just because
-                    mean = try_(lambda: float(pd.Series(arr).mean()), default=np.nan)
-                    if not np.isnan(mean) and (abs(mean) < .1 or
-                                               round(abs(mean), 1) == .5 or
-                                               round(abs(mean), -1) in (50, 100, 200)):
-                        fig.add_layout(Span(location=float(mean), dimension='width',
-                                            line_color='#666666', line_dash='dashed',
-                                            level='underlay', line_width=.5))
+                    mean = float(pd.Series(arr).mean())
+                    if not np.isnan(mean) and (
+                        abs(mean) < 0.1
+                        or round(abs(mean), 1) == 0.5
+                        or round(abs(mean), -1) in (50, 100, 200)
+                    ):
+                        fig.add_layout(
+                            Span(
+                                location=float(mean),
+                                dimension="width",
+                                line_color="#666666",
+                                line_dash="dashed",
+                                line_width=0.5,
+                            )
+                        )
+
+            label_tooltip_pairs = [
+                (label, tooltip) for label, tooltip in zip(legend_label, tooltips)
+            ]
             if is_overlay:
-                ohlc_tooltips.append((tooltip_label, NBSP.join(tooltips)))
+                ohlc_tooltips.extend(label_tooltip_pairs)
             else:
-                set_tooltips(fig, [(tooltip_label, NBSP.join(tooltips))], vline=True, renderers=[r])
+                set_tooltips(fig, label_tooltip_pairs, vline=True, renderers=[r])
                 # If the sole indicator line on this figure,
                 # have the legend only contain text without the glyph
                 if len(value) == 1:
@@ -625,6 +914,9 @@ return this.labels[index] || "";
 
     if plot_equity:
         _plot_equity_section()
+
+    if plot_allocation:
+        _plot_equity_stack_section(relative_allocation)
 
     if plot_return:
         _plot_equity_section(is_return=True)
@@ -643,134 +935,148 @@ return this.labels[index] || "";
         _plot_superimposed_ohlc()
 
     ohlc_bars = _plot_ohlc()
-    if plot_trades:
+    if plot_trades and len(data.columns.levels[0]) <= 10:
         _plot_ohlc_trades()
-    indicator_figs = _plot_indicators()
-    if reverse_indicators:
-        indicator_figs = indicator_figs[::-1]
-    figs_below_ohlc.extend(indicator_figs)
-
-    _watermark(fig_ohlc)
+    if len(data.columns.levels[0]) > 1:
+        _plot_ohlc_universe()
+    if plot_indicator:
+        indicator_figs = _plot_indicators()
+        if reverse_indicators:
+            indicator_figs = indicator_figs[::-1]
+        figs_below_ohlc.extend(indicator_figs)
 
     set_tooltips(fig_ohlc, ohlc_tooltips, vline=True, renderers=[ohlc_bars])
 
-    source.add(ohlc_extreme_values.min(1), 'ohlc_low')
-    source.add(ohlc_extreme_values.max(1), 'ohlc_high')
+    source.add(ohlc_extreme_values.min(1), "ohlc_low")
+    source.add(ohlc_extreme_values.max(1), "ohlc_high")
 
-    custom_js_args = dict(ohlc_range=fig_ohlc.y_range,
-                          source=source)
+    custom_js_args = dict(ohlc_range=fig_ohlc.y_range, source=source)
     if plot_volume:
         custom_js_args.update(volume_range=fig_volume.y_range)
 
-    fig_ohlc.x_range.js_on_change('end', CustomJS(args=custom_js_args,
-                                                  code=_AUTOSCALE_JS_CALLBACK))
-
-    figs = figs_above_ohlc + [fig_ohlc] + figs_below_ohlc
-    linked_crosshair = CrosshairTool(
-        dimensions='both', line_color='lightgrey',
-        overlay=(Span(dimension="width", line_dash="dotted", line_width=1),
-                 Span(dimension="height", line_dash="dotted", line_width=1)),
+    fig_ohlc.x_range.js_on_change(
+        "end",
+        CustomJS(
+            args=custom_js_args,  # type: ignore
+            code=_AUTOSCALE_JS_CALLBACK,
+        ),
     )
 
-    for f in figs:
+    plots = figs_above_ohlc + [fig_ohlc] + figs_below_ohlc
+    linked_crosshair = CrosshairTool(dimensions="both")
+
+    for f in plots:
         if f.legend:
             f.legend.visible = show_legend
-            f.legend.location = 'top_left'
+            f.legend.location = "top_left"
             f.legend.border_line_width = 1
-            f.legend.border_line_color = '#333333'
+            f.legend.border_line_color = "#333333"
             f.legend.padding = 5
             f.legend.spacing = 0
             f.legend.margin = 0
-            f.legend.label_text_font_size = '8pt'
+            f.legend.label_text_font_size = "8pt"
             f.legend.click_policy = "hide"
         f.min_border_left = 0
         f.min_border_top = 3
         f.min_border_bottom = 6
         f.min_border_right = 10
-        f.outline_line_color = '#666666'
+        f.outline_line_color = "#666666"
+        f.toolbar.logo = None
 
         f.add_tools(linked_crosshair)
         wheelzoom_tool = next(wz for wz in f.tools if isinstance(wz, WheelZoomTool))
-        wheelzoom_tool.maintain_focus = False
+        wheelzoom_tool.maintain_focus = False  # type: ignore
 
     kwargs = {}
     if plot_width is None:
-        kwargs['sizing_mode'] = 'stretch_width'
+        kwargs["sizing_mode"] = "stretch_width"
 
     fig = gridplot(
-        figs,
+        plots,
         ncols=1,
-        toolbar_location='right',
-        toolbar_options=dict(logo=None),
+        toolbar_location="right",
         merge_tools=True,
-        **kwargs  # type: ignore
+        **kwargs,  # type: ignore
     )
-    show(fig, browser=None if open_browser else 'none')
+    show(fig, browser=None if open_browser else "none")
     return fig
 
 
-def plot_heatmaps(heatmap: pd.Series, agg: Union[Callable, str], ncols: int,
-                  filename: str = '', plot_width: int = 1200, open_browser: bool = True):
-    if not (isinstance(heatmap, pd.Series) and
-            isinstance(heatmap.index, pd.MultiIndex)):
-        raise ValueError('heatmap must be heatmap Series as returned by '
-                         '`Backtest.optimize(..., return_heatmap=True)`')
-    if len(heatmap.index.levels) < 2:
-        raise ValueError('`plot_heatmap()` requires at least two optimization '
-                         'variables to plot')
+def plot_heatmaps(
+    heatmap: pd.Series,
+    agg: Union[Callable, str],
+    ncols: int,
+    filename: str = "",
+    plot_width: int = 1200,
+    open_browser: bool = True,
+):
+    if not (
+        isinstance(heatmap, pd.Series) and isinstance(heatmap.index, pd.MultiIndex)
+    ):
+        raise ValueError(
+            "heatmap must be heatmap Series as returned by "
+            "`Backtest.optimize(..., return_heatmap=True)`"
+        )
 
     _bokeh_reset(filename)
 
     param_combinations = combinations(heatmap.index.names, 2)
-    dfs = [heatmap.groupby(list(dims)).agg(agg).to_frame(name='_Value')
-           for dims in param_combinations]
-    figs: list[_figure] = []
-    cmap = LinearColorMapper(palette='Viridis256',
-                             low=min(df.min().min() for df in dfs),
-                             high=max(df.max().max() for df in dfs),
-                             nan_color='white')
+    dfs = [
+        heatmap.groupby(list(dims)).agg(agg).to_frame(name="_Value")
+        for dims in param_combinations
+    ]
+    plots = []
+    cmap = LinearColorMapper(
+        palette="Viridis256",
+        low=min(df.min().min() for df in dfs),
+        high=max(df.max().max() for df in dfs),
+        nan_color="white",
+    )
     for df in dfs:
         name1, name2 = df.index.names
         level1 = df.index.levels[0].astype(str).tolist()
         level2 = df.index.levels[1].astype(str).tolist()
         df = df.reset_index()
-        df[name1] = df[name1].astype('str')
-        df[name2] = df[name2].astype('str')
+        df[name1] = df[name1].astype("str")
+        df[name2] = df[name2].astype("str")
 
-        fig = _figure(x_range=level1,  # type: ignore[call-arg]
-                      y_range=level2,
-                      x_axis_label=name1,
-                      y_axis_label=name2,
-                      width=plot_width // ncols,
-                      height=plot_width // ncols,
-                      tools='box_zoom,reset,save',
-                      tooltips=[(name1, '@' + name1),
-                                (name2, '@' + name2),
-                                ('Value', '@_Value{0.[000]}')])
-        fig.grid.grid_line_color = None        # type: ignore[attr-defined]
-        fig.axis.axis_line_color = None        # type: ignore[attr-defined]
-        fig.axis.major_tick_line_color = None  # type: ignore[attr-defined]
-        fig.axis.major_label_standoff = 0      # type: ignore[attr-defined]
+        fig = _figure(
+            x_range=level1,
+            y_range=level2,
+            x_axis_label=name1,
+            y_axis_label=name2,
+            width=plot_width // ncols,
+            height=plot_width // ncols,
+            tools="box_zoom,reset,save",
+            tooltips=[
+                (name1, "@" + name1),
+                (name2, "@" + name2),
+                ("Value", "@_Value{0.[000]}"),
+            ],
+        )
+        fig.grid.grid_line_color = None
+        fig.axis.axis_line_color = None
+        fig.axis.major_tick_line_color = None
+        fig.axis.major_label_standoff = 0
 
-        if not len(figs):
-            _watermark(fig)
-
-        fig.rect(x=name1,
-                 y=name2,
-                 width=1,
-                 height=1,
-                 source=df,
-                 line_color=None,
-                 fill_color=dict(field='_Value',
-                                 transform=cmap))
-        figs.append(fig)
+        fig.rect(
+            x=name1,
+            y=name2,
+            width=1,
+            height=1,
+            source=df,
+            line_color=None,
+            fill_color=dict(field="_Value", transform=cmap),
+        )
+        fig.toolbar.logo = None
+        plots.append(fig)
 
     fig = gridplot(
-        figs,  # type: ignore
+        plots,  # type: ignore
         ncols=ncols,
-        toolbar_options=dict(logo=None),
-        toolbar_location='above',
+        toolbar_location="above",
         merge_tools=True,
     )
-    show(fig, browser=None if open_browser else 'none')
+
+    show(fig, browser=None if open_browser else "none")
     return fig

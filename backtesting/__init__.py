@@ -1,15 +1,12 @@
 """
 
-![xkcd.com/1570](https://imgs.xkcd.com/comics/engineer_syllogism.png){: height=263}
+![xkcd.com/1570](https://imgs.xkcd.com/comics/engineer_syllogism.png)
 
 ## Manuals
 
 * [**Quick Start User Guide**](../examples/Quick Start User Guide.html)
 
 ## Tutorials
-
-The tutorials encompass most framework features, so it's important
-and advisable to go through all of them. They are short.
 
 * [Library of Utilities and Composable Base Strategies](../examples/Strategies Library.html)
 * [Multiple Time Frames](../examples/Multiple Time Frames.html)
@@ -18,18 +15,13 @@ and advisable to go through all of them. They are short.
 
 These tutorials are also available as live Jupyter notebooks:
 [![Binder](https://mybinder.org/badge_logo.svg)][binder]
-[![Google Colab](https://colab.research.google.com/assets/colab-badge.png)][colab]
+[![Google Colab](https://colab.research.google.com/assets/colab-badge.svg)][colab]
 <br>In Colab, you might have to `!pip install backtesting`.
 
 [binder]: \
     https://mybinder.org/v2/gh/kernc/backtesting.py/master?\
 urlpath=lab%2Ftree%2Fdoc%2Fexamples%2FQuick%20Start%20User%20Guide.ipynb
 [colab]: https://colab.research.google.com/github/kernc/backtesting.py/
-
-## Video Tutorials
-
-* Some [**coverage on YouTube**](https://github.com/kernc/backtesting.py/discussions/677).
-* [YouTube search](https://www.youtube.com/results?q=%22backtesting.py%22)
 
 ## Example Strategies
 
@@ -38,7 +30,7 @@ urlpath=lab%2Ftree%2Fdoc%2Fexamples%2FQuick%20Start%20User%20Guide.ipynb
 
 .. tip::
     For an overview of recent changes, see
-    [What's New, i.e. the **Change Log**](https://github.com/kernc/backtesting.py/blob/master/CHANGELOG.md).
+    [What's New](https://github.com/kernc/backtesting.py/blob/master/CHANGELOG.md).
 
 
 ## FAQ
@@ -61,10 +53,10 @@ itself find their way back to the community.
 # API Reference Documentation
 """
 try:
-    from ._version import version as __version__
+    from ._version import version as __version__  # noqa: F401
 except ImportError:
     __version__ = '?.?.?'  # Package not installed
 
 from . import lib  # noqa: F401
 from ._plotting import set_bokeh_output  # noqa: F401
-from .backtesting import Backtest, Strategy  # noqa: F401
+from .backtesting import Allocation, Backtest, Strategy  # noqa: F401
