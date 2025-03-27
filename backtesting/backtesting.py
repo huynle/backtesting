@@ -546,8 +546,8 @@ class Strategy(ABC):
     """
     A trading strategy base class. Extend this class and
     override methods
-    `minitrade.backtest.core.backtesting.Strategy.init` and
-    `minitrade.backtest.core.backtesting.Strategy.next` to define
+    `backtesting.backtesting.Strategy.init` and
+    `backtesting.backtesting.Strategy.next` to define
     your own strategy.
     """
 
@@ -588,19 +588,19 @@ class Strategy(ABC):
         """
         Declare an indicator. An indicator is just an array of values,
         but one that is revealed gradually in
-        `minitrade.backtest.core.backtesting.Strategy.next` much like
-        `minitrade.backtest.core.backtesting.Strategy.data` is.
+        `backtesting.backtesting.Strategy.next` much like
+        `backtesting.backtesting.Strategy.data` is.
         Returns DataFrame in `init()` and `np.ndarray` of indicator values in `next()`.
 
         `funcval` is either a function that returns the indicator array(s) of
-        same length as `minitrade.backtest.core.backtesting.Strategy.data`, or
+        same length as `backtesting.backtesting.Strategy.data`, or
         the indicator array(s) itself as a DataFrame, Series, or arrays.
 
         In the plot legend, the indicator is labeled with function name,
         DataFrame column name, or Series name, unless `name` overrides it.
 
         If `plot` is `True`, the indicator is plotted on the resulting
-        `minitrade.backtest.core.backtesting.Backtest.plot`.
+        `backtesting.backtesting.Backtest.plot`.
 
         If `overlay` is `True`, the indicator is plotted overlaying the
         price candlestick chart (suitable e.g. for moving averages).
@@ -675,11 +675,11 @@ class Strategy(ABC):
         """
         Initialize the strategy.
         Override this method.
-        Declare indicators (with `minitrade.backtest.core.backtesting.Strategy.I`).
+        Declare indicators (with `backtesting.backtesting.Strategy.I`).
         Precompute what needs to be precomputed or can be precomputed
         in a vectorized fashion before the strategy starts.
 
-        If you extend composable strategies from `minitrade.backtest.core.backtesting.lib`,
+        If you extend composable strategies from `backtesting.backtesting.lib`,
         make sure to call: `super().init()`
         """
 
@@ -687,13 +687,13 @@ class Strategy(ABC):
     def next(self):
         """
         Main strategy runtime method, called as each new
-        `minitrade.backtest.core.backtesting.Strategy.data`
+        `backtesting.backtesting.Strategy.data`
         instance (row; full candlestick bar) becomes available.
         This is the main method where strategy decisions
-        upon data precomputed in `minitrade.backtest.core.backtesting.Strategy.init`
+        upon data precomputed in `backtesting.backtesting.Strategy.init`
         take place.
 
-        If you extend composable strategies from `minitrade.backtest.core.backtesting.lib`,
+        If you extend composable strategies from `backtesting.backtesting.lib`,
         make sure to call: `super().next()`
         """
 
@@ -802,7 +802,7 @@ class Strategy(ABC):
 
         Args:
             name: Name of the time series. If not provided, the name will be the same as the keyword argument.
-            plot: If True, the time series will be plotted on the resulting `minitrade.backtest.core.backtesting.Backtest.plot`.
+            plot: If True, the time series will be plotted on the resulting `backtesting.backtesting.Backtest.plot`.
             overlay: If True, the time series will be plotted overlaying the price candlestick chart. If False, the time series
                 will be plotted standalone below the candlestick chart.
             color: Color of the time series. If not provided, the next available color will be assigned.
@@ -831,22 +831,22 @@ class Strategy(ABC):
     def data(self) -> _Data:
         """
         Price data, roughly as passed into
-        `minitrade.backtest.core.backtesting.Backtest.__init__`,
+        `backtesting.backtesting.Backtest.__init__`,
         but with two significant exceptions:
 
         * `data` is _not_ a DataFrame, but a custom structure
           that serves customized numpy arrays for reasons of performance
           and convenience. Besides OHLCV columns, `.index` and length,
           it offers `.pip` property, the smallest price unit of change.
-        * Within `minitrade.backtest.core.backtesting.Strategy.init`, `data` arrays
+        * Within `backtesting.backtesting.Strategy.init`, `data` arrays
           are available in full length, as passed into
-          `minitrade.backtest.core.backtesting.Backtest.__init__`
+          `backtesting.backtesting.Backtest.__init__`
           (for precomputing indicators and such). However, within
-          `minitrade.backtest.core.backtesting.Strategy.next`, `data` arrays are
+          `backtesting.backtesting.Strategy.next`, `data` arrays are
           only as long as the current iteration, simulating gradual
           price point revelation. In each call of
-          `minitrade.backtest.core.backtesting.Strategy.next` (iteratively called by
-          `minitrade.backtest.core.backtesting.Backtest` internally),
+          `backtesting.backtesting.Strategy.next` (iteratively called by
+          `backtesting.backtesting.Backtest` internally),
           the last array value (e.g. `data.Close[-1]`)
           is always the _most recent_ value.
         * If you need data arrays (e.g. `data.Close`) to be indexed
@@ -872,7 +872,7 @@ class Strategy(ABC):
         return self._broker._storage
 
     def position(self, ticker: str = None) -> 'Position':
-        """Instance of `minitrade.backtest.core.backtesting.Position`.
+        """Instance of `backtesting.backtesting.Position`.
 
         For single asset strategy, `ticker` can be left as None, which returns
         the position of the only asset.
@@ -938,8 +938,8 @@ class Strategy(ABC):
 class Position:
     """
     Currently held asset position, available as
-    `minitrade.backtest.core.backtesting.Strategy.position` within
-    `minitrade.backtest.core.backtesting.Strategy.next`.
+    `backtesting.backtesting.Strategy.position` within
+    `backtesting.backtesting.Strategy.next`.
     Can be used in boolean contexts, e.g.
 
         if self.position():
@@ -1777,8 +1777,8 @@ class Backtest:
     on particular data.
 
     Upon initialization, call method
-    `minitrade.backtest.core.backtesting.Backtest.run` to run a backtest
-    instance, or `minitrade.backtest.core.backtesting.Backtest.optimize` to
+    `backtesting.backtesting.Backtest.run` to run a backtest
+    instance, or `backtesting.backtesting.Backtest.optimize` to
     optimize it.
     """
 
@@ -1816,7 +1816,7 @@ class Backtest:
         DataFrame index can be either a datetime index (timestamps)
         or a monotonic range index (i.e. a sequence of periods).
 
-        `strategy` is a `minitrade.backtest.core.backtesting.Strategy`
+        `strategy` is a `backtesting.backtesting.Strategy`
         _subclass_ (not an instance).
 
         `cash` is the initial cash to start with.
@@ -2080,7 +2080,7 @@ class Backtest:
         Returns result `pd.Series` of the best run.
 
         `maximize` is a string key from the
-        `minitrade.backtest.core.backtesting.Backtest.run`-returned results series,
+        `backtesting.backtesting.Backtest.run`-returned results series,
         or a function that accepts this series object and returns a number;
         the higher the better. By default, the method maximizes
         Van Tharp's [System Quality Number](https://google.com/search?q=System+Quality+Number).
@@ -2388,8 +2388,8 @@ class Backtest:
 
         If `results` is provided, it should be a particular result
         `pd.Series` such as returned by
-        `minitrade.backtest.core.backtesting.Backtest.run` or
-        `minitrade.backtest.core.backtesting.Backtest.optimize`, otherwise the last
+        `backtesting.backtesting.Backtest.run` or
+        `backtesting.backtesting.Backtest.optimize`, otherwise the last
         run's results are used.
 
         `filename` is the path to save the interactive HTML plot to.
