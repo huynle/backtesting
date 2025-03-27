@@ -17,9 +17,9 @@ import multiprocessing as mp
 import warnings
 from collections import OrderedDict
 from inspect import currentframe
-from itertools import compress
+from itertools import chain, compress, count
 from numbers import Number
-from typing import Callable, Optional, Sequence, Union
+from typing import Callable, Generator, Optional, Sequence, Union
 
 import numpy as np
 import pandas as pd
@@ -27,7 +27,7 @@ import pandas as pd
 from ._plotting import plot_heatmaps as _plot_heatmaps
 from ._stats import compute_stats as _compute_stats
 from ._util import SharedMemoryManager, _Array, _as_str, _batch, _tqdm
-from .backtesting import Strategy
+from .backtesting import Backtest, Strategy
 
 __pdoc__ = {}
 

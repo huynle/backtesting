@@ -11,7 +11,7 @@ from glob import glob
 from runpy import run_path
 from tempfile import NamedTemporaryFile, gettempdir
 from unittest import TestCase
-from unittest.mock import patch as test_patch
+from unittest.mock import patch as patcher
 
 import numpy as np
 import pandas as pd
@@ -665,7 +665,7 @@ class TestOptimize(TestCase):
         kw = {"fast": [10]}
 
         stats1 = Backtest(df, SmaCross).optimize(**kw)
-        with test_patch("multiprocessing.get_start_method", lambda **_: "spawn"):
+        with patcher("multiprocessing.get_start_method", lambda **_: "spawn"):
             with self.assertWarns(UserWarning) as cm:
                 stats2 = Backtest(df, SmaCross).optimize(**kw)
 
@@ -830,7 +830,7 @@ class TestPlot(TestCase):
 
         with (
             _tempfile() as f,
-            test_patch.object(backtesting._plotting, "_MAX_CANDLES", 10),
+            patcher.object(backtesting._plotting, "_MAX_CANDLES", 10),
             self.assertWarns(UserWarning),
         ):
             bt.plot(filename=f, resample=True)

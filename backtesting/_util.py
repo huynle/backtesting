@@ -11,6 +11,7 @@ from multiprocessing import shared_memory as _mpshm
 from numbers import Number
 from threading import Lock
 from typing import Dict, List, Optional, Sequence, Union, cast
+from pandas_ta import AnalysisIndicators
 
 import numpy as np
 import pandas as pd
