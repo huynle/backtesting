@@ -1,38 +1,74 @@
-[tool.ruff]
-exclude = [
-    '.git',
-    '.eggs',
-    '__pycache__',
-    'doc/examples',
-]
-ignore = [
-    'UP006',
-    'UP007',
-    'UP009',
-    'N802',
-    'N806',
-    'C901',
-    'B008',
-    'B011',
-    'RUF002',
-]
-line-length = 100
-select = [
-    'I',
-    'E',
-    'F',
-    'W',
-    'UP',
-    'N',
-    'C',
-    'B',
-    'T',
-    'RUF',
-    'YTT',
-]
+[tool.poetry]
+name = "backtesting"
+version = "0.2.0"
+description = "A personal automated trading system"
+readme = "README.md"
+license = "AGPL-3.0-or-later"
+keywords = ["finance", "investing", "trading", "algorithmic-trading", "backtesting", "backtesting-frameworks", "interactive-brokers"]
 
-[tool.ruff.pep8-naming]
-ignore-names = [
-    'l',
-    'h',
-]
+
+[tool.poetry.dependencies]
+python = ">=3.12, <=3.13.2"
+streamlit = "^1.27"
+pandas = "^2.1"
+numpy = "^1.26"
+apscheduler = "^3.10"
+watchdog = "^2.3"
+pandas-ta = "^0.3"
+bokeh = "^3.2"
+yfinance = "^0.2"
+matplotlib = "^3.8"
+seaborn = "^0.13"
+tqdm = "^4.66"
+pydantic = "^2.4"
+nanoid = "^2.0"
+fastapi = {extras = ["all"], version = "^0.110"}
+requests = "^2.31"
+selenium = "^4.12"
+psutil = "^5.9"
+pyyaml = "^6.0"
+pypika = "^0.48"
+click = "^8.1"
+mailjet-rest = "^1.3"
+scikit-learn = "^1.3"
+scikit-optimize= "^0.10.2"
+scipy = "^1.11"
+akshare = "^1.11.16"
+dill = "^0.3.7"
+statsmodels = "^0.14"
+fredapi = "^0.5"
+quantstats = "^0.0"
+ipython = "^8.19"
+ipywidgets = "^8.1"
+riskfolio-lib = "^7.0"
+exchange-calendars = "^4.6"
+loguru = "^0.7"
+mitmproxy = "^11.1"
+streamlit-monaco = "^0.1"
+apprise = "^1.9"
+pypubsub = "^4.0"
+schwabdev = "^2.5"
+# ibeam = "^0.5.7"
+ibeam  = { path = "/code/ibeam", develop = false }
+ta-lib = "^0.6.3"
+
+
+
+[tool.poetry.group.dev.dependencies]
+autopep8 = "^2"
+pytest = "^7"
+notebook = "^7"
+vprof = "^0.38"
+pytest-cov = "^4"
+black = "^24"
+mkdocs = "^1"
+mkdocstrings = {extras = ["python"], version = "^0.24"}
+mkdocs-material = "^9"
+mkdocs-click = "^0.8"
+mkdocs-jupyter = "^0.24"
+lxml-html-clean = "^0.1"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
