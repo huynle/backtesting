@@ -697,7 +697,12 @@ class TestPlot(TestCase):
         self.assertRaises(RuntimeError, bt.plot)
 
     def test_file_size(self):
-        bt = Backtest(GOOG, SmaCross)
+        # data.columns.values
+        # array([('AAPL', 'Open'), ('AAPL', 'High'), ('AAPL', 'Low'),\n       ('AAPL', 'Close'), ('AAPL', 'Volume')], dtype=object)
+        #   [0:5] : [('AAPL', 'Open'), ('AAPL', 'High'), ('AAPL', 'Low'), ('AAPL', 'Close'), ('AAPL', 'Volume')]
+
+        data = 
+        bt = Backtest(data, SmaCross)
         bt.run()
         with _tempfile() as f:
             bt.plot(filename=f[: -len(".html")], open_browser=False)
@@ -834,6 +839,22 @@ class TestPlot(TestCase):
             bt.plot(filename=f, resample=True)
             # Give browser time to open before tempfile is removed
             time.sleep(1)
+
+    def test_multi(self):
+        bt = Backtest(GOOG, SmaCross)
+        bt.run()
+        import backtesting._plotting
+
+        with (
+            _tempfile() as f,
+            patcher.object(backtesting._plotting, "_MAX_CANDLES", 10),
+            self.assertWarns(UserWarning),
+        ):
+            bt.plot(filename=f, resample=True)
+            # Give browser time to open before tempfile is removed
+            time.sleep(1)
+
+
 
     def test_indicator_color(self):
         class S(Strategy):
