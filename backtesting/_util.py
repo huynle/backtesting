@@ -6,11 +6,12 @@ import warnings
 from contextlib import contextmanager
 from functools import partial
 from itertools import chain
+from datetime import datetime
 from multiprocessing import resource_tracker as _mprt
 from multiprocessing import shared_memory as _mpshm
 from numbers import Number
 from threading import Lock
-from typing import Dict, List, Optional, Sequence, Union, cast
+from typing import Callable, Dict, List, Optional, Sequence, Union, cast
 from pandas_ta import AnalysisIndicators
 
 import numpy as np
@@ -340,13 +341,39 @@ class SharedMemoryManager:
 
     @staticmethod
     def shm2df(data_shm):
-        shm = [SharedMemory(name=name, create=False, track=False) for _, name, _, _ in data_shm]
-        df = pd.DataFrame({
-            col: SharedMemoryManager.shm2arr(shm, shape, dtype)
-            for shm, (col, _, shape, dtype) in zip(shm, data_shm)})
-        df.set_index(SharedMemoryManager._DF_INDEX_COL, drop=True, inplace=True)
-        df.index.name = None
-        return df, shm
+        index_data = None
+        data_dict = {}
+        shm_map = {}
+        shms_to_return = []
+
+        for item in data_shm:
+            col, name, shape, dtype = item
+            # Create SharedMemory instance without tracking for read-only access in worker
+            shm = SharedMemory(name=name, create=False, track=False)
+            shm_map[name] = shm  # Keep reference to prevent premature release on some OS
+            shms_to_return.append(shm)
+            arr = SharedMemoryManager.shm2arr(shm, shape, dtype)
+            if col == SharedMemoryManager._DF_INDEX_COL:
+                index_data = arr
+            else:
+                data_dict[col] = arr
+
+        if index_data is None:
+            raise ValueError("Index data not found in shared memory bundle.")
+
+        df = pd.DataFrame(data_dict)
+
+        # Check if original columns were MultiIndex tuples based on the keys stored
+        if data_dict and all(isinstance(c, tuple) for c in data_dict.keys()):
+             # Ensure columns are sorted correctly if necessary, though dict order is preserved >= 3.7
+             df.columns = pd.MultiIndex.from_tuples(df.columns)
+
+        # Reconstruct index
+        df.index = index_data
+        df.index.name = None  # Restore original state (index name is not stored)
+
+        # Return df and the list of shm objects to keep refs
+        return df, shms_to_return
 
 
 

@@ -625,12 +625,10 @@ class TestOptimize(TestCase):
     def test_max_tries(self):
         bt = Backtest(GOOG.iloc[:100], SmaCross)
         OPT_PARAMS = {"fast": range(2, 10, 2), "slow": [2, 5, 7, 9]}
-        for method, max_tries, random_state in (
-            ("grid", 5, 0),
-            ("grid", 0.3, 0),
-            ("skopt", 7, 0),
-            ("skopt", 0.45, 0),
-        ):
+        for method, max_tries, random_state in (('grid', 5, 0),
+                                                ('grid', .3, 0),
+                                                ('sambo', 6, 0),
+                                                ('sambo', .42, 0)):
             with self.subTest(
                 method=method, max_tries=max_tries, random_state=random_state
             ):

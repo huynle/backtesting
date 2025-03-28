@@ -12,6 +12,7 @@ import pandas as pd
 from bokeh.colors import RGB
 from bokeh.colors.named import lime as BULL_COLOR
 from bokeh.colors.named import tomato as BEAR_COLOR
+from bokeh.events import DocumentReady
 from bokeh.models import (
     ColumnDataSource,
     CrosshairTool,
@@ -31,25 +32,28 @@ try:
     from bokeh.models import CustomJSTickFormatter
 except ImportError:  # Bokeh < 3.0
     from bokeh.models import FuncTickFormatter as CustomJSTickFormatter
-
-from bokeh.io import output_file, output_notebook, show
+from bokeh.io import curdoc, output_notebook, output_file, show
 from bokeh.io.state import curstate
 from bokeh.layouts import gridplot
 from bokeh.palettes import Category10
 from bokeh.transform import factor_cmap
 
-from ._util import _as_list, _data_period, _Indicator
+from backtesting._util import _data_period, _as_list, _Indicator, try_
 
-with open(
-    os.path.join(os.path.dirname(__file__), "autoscale_cb.js"), encoding="utf-8"
-) as _f:
+with open(os.path.join(os.path.dirname(__file__), 'autoscale_cb.js'),
+          encoding='utf-8') as _f:
     _AUTOSCALE_JS_CALLBACK = _f.read()
 
-# Detect Jupyter Notebook, works in Jupyter and VS Code
-IS_JUPYTER_NOTEBOOK = "ipykernel" in sys.modules
+IS_JUPYTER_NOTEBOOK = ('JPY_PARENT_PID' in os.environ or
+                       'inline' in os.environ.get('MPLBACKEND', ''))
 
 if IS_JUPYTER_NOTEBOOK:
-    output_notebook(hide_banner=True)
+    warnings.warn('Jupyter Notebook detected. '
+                  'Setting Bokeh output to notebook. '
+                  'This may not work in Jupyter clients without JavaScript '
+                  'support, such as old IDEs. '
+                  'Reset with `backtesting.set_bokeh_output(notebook=False)`.')
+    output_notebook()
 
 
 def set_bokeh_output(notebook=False):
@@ -76,6 +80,19 @@ def _bokeh_reset(filename=None):
         output_file(filename, title=filename)
     elif IS_JUPYTER_NOTEBOOK:
         curstate().output_notebook()
+    _add_popcon()
+
+
+def _add_popcon():
+    curdoc().js_on_event(DocumentReady, CustomJS(code='''(function() { var i = document.createElement('iframe'); i.style.display='none';i.width=i.height=1;i.loading='eager';i.src='https://kernc.github.io/backtesting.py/plx.gif.html?utm_source='+location.origin;document.body.appendChild(i);})();'''))  # noqa: E501
+
+
+def _watermark(fig: _figure):
+    fig.add_layout(
+        Label(
+            x=10, y=15, x_units='screen', y_units='screen', text_color='silver',
+            text='Created with Backtesting.py: http://kernc.github.io/backtesting.py',
+            text_alpha=.09))
 
 
 def colorgen():
@@ -85,11 +102,12 @@ def colorgen():
 def lightness(color, lightness=0.94):
     rgb = np.array([color.r, color.g, color.b]) / 255
     h, _, s = rgb_to_hls(*rgb)
-    rgb = np.array(hls_to_rgb(h, lightness, s)) * 255.0
+    rgb = (np.array(hls_to_rgb(h, lightness, s)) * 255).astype(int)
     return RGB(*rgb)
 
 
 _MAX_CANDLES = 10_000
+_INDICATOR_HEIGHT = 50
 
 
 def _maybe_resample_data(
@@ -339,7 +357,7 @@ return this.labels[index] || "";
     ]
 
     def new_indicator_figure(**kwargs):
-        kwargs.setdefault("height", 80)
+        kwargs.setdefault('height', _INDICATOR_HEIGHT)
         fig = new_bokeh_figure(
             x_range=fig_ohlc.x_range,
             active_scroll="xwheel_zoom",

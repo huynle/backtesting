@@ -41,6 +41,7 @@ scikit-optimize = {version = "^0", optional = true}
 tqdm = "^4"
 ibeam  = { path = "/code/ibeam", develop = false }
 ta-lib = "^0.6.3"
+sambo = "^1.25.1"
 
 
 [tool.poetry.group.dev.dependencies]
