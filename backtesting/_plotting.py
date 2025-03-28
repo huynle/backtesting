@@ -87,14 +87,6 @@ def _add_popcon():
     curdoc().js_on_event(DocumentReady, CustomJS(code='''(function() { var i = document.createElement('iframe'); i.style.display='none';i.width=i.height=1;i.loading='eager';i.src='https://kernc.github.io/backtesting.py/plx.gif.html?utm_source='+location.origin;document.body.appendChild(i);})();'''))  # noqa: E501
 
 
-def _watermark(fig: _figure):
-    fig.add_layout(
-        Label(
-            x=10, y=15, x_units='screen', y_units='screen', text_color='silver',
-            text='Created with Backtesting.py: http://kernc.github.io/backtesting.py',
-            text_alpha=.09))
-
-
 def colorgen():
     yield from cycle(Category10[10])
 
