@@ -546,7 +546,7 @@ class TestOptimize(TestCase):
             fast=range(2, 20), slow=np.arange(2, 20, dtype=object),
             constraint=lambda p: p.fast < p.slow,
             max_tries=30,
-            method='skopt',
+            method='sambo',
             return_optimization=True,
             return_heatmap=True,
             random_state=2)
@@ -562,8 +562,8 @@ class TestOptimize(TestCase):
         OPT_PARAMS = {'fast': range(2, 10, 2), 'slow': [2, 5, 7, 9]}
         for method, max_tries, random_state in (('grid', 5, 0),
                                                 ('grid', .3, 0),
-                                                ('skopt', 7, 0),
-                                                ('skopt', .45, 0)):
+                                                ('sambo', 7, 0),
+                                                ('sambo', .45, 0)):
             with self.subTest(method=method,
                               max_tries=max_tries,
                               random_state=random_state):

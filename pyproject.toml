@@ -55,6 +55,7 @@ matplotlib = "*"
 scikit-learn = "*"
 sambo = "*"
 tqdm = "*"
+pytest = "*"
 
 [tool.poetry.group.dev.dependencies]
 flake8 = "*"
