@@ -34,7 +34,9 @@ except ImportError:
 
 from ._plotting import plot  # noqa: I001
 from ._stats import compute_stats
-from ._util import _as_str, _Data, _Indicator, try_
+from ._util import (
+    SharedMemoryManager, _as_str, _Data, _Indicator, _batch, patch, try_,
+)
 
 __pdoc__ = {
     'Strategy.__init__': False,
@@ -2089,11 +2091,10 @@ class Backtest:
 
         * `"grid"` which does an exhaustive (or randomized) search over the
           cartesian product of parameter combinations, and
-        * `"skopt"` which finds close-to-optimal strategy parameters using
+        * `"sambo"` which finds close-to-optimal strategy parameters using
           [model-based optimization], making at most `max_tries` evaluations.
 
-        [model-based optimization]: \
-            https://scikit-optimize.github.io/stable/auto_examples/bayesian-optimization.html
+        [model-based optimization]: https://sambo-optimization.github.io
 
         `max_tries` is the maximal number of strategy runs to perform.
         If `method="grid"`, this results in randomized grid search.
@@ -2101,7 +2102,7 @@ class Backtest:
         number of runs to approximately that fraction of full grid space.
         Alternatively, if integer, it denotes the absolute maximum number
         of evaluations. If unspecified (default), grid search is exhaustive,
-        whereas for `method="skopt"`, `max_tries` is set to 200.
+        whereas for `method="sambo"`, `max_tries` is set to 200.
 
         `constraint` is a function that accepts a dict-like object of
         parameters (with values) and returns `True` when the combination
@@ -2114,16 +2115,14 @@ class Backtest:
         inspected or projected onto 2D to plot a heatmap
         (see `backtesting.lib.plot_heatmaps()`).
 
-        If `return_optimization` is True and `method = 'skopt'`,
+        If `return_optimization` is True and `method = 'sambo'`,
         in addition to result series (and maybe heatmap), return raw
         [`scipy.optimize.OptimizeResult`][OptimizeResult] for further
-        inspection, e.g. with [scikit-optimize]\
-        [plotting tools].
+        inspection, e.g. with [SAMBO]'s [plotting tools].
 
-        [OptimizeResult]: \
-            https://docs.scipy.org/doc/scipy/reference/generated/scipy.optimize.OptimizeResult.html
-        [scikit-optimize]: https://scikit-optimize.github.io
-        [plotting tools]: https://scikit-optimize.github.io/stable/modules/plots.html
+        [OptimizeResult]: https://sambo-optimization.github.io/doc/sambo/#sambo.OptimizeResult
+        [SAMBO]: https://sambo-optimization.github.io
+        [plotting tools]: https://sambo-optimization.github.io/doc/sambo/plot.html
 
         If you want reproducible optimization results, set `random_state`
         to a fixed integer random seed.
@@ -2171,8 +2170,12 @@ class Backtest:
                             "the combination of parameters is admissible or not")
         assert callable(constraint), constraint
 
-        if return_optimization and method != 'skopt':
-            raise ValueError("return_optimization=True only valid if method='skopt'")
+        if method == 'skopt':
+            method = 'sambo'
+            warnings.warn('`Backtest.optimize(method="skopt")` is deprecated. Use `method="sambo"`.',
+                          DeprecationWarning, stacklevel=2)
+        if return_optimization and method != 'sambo':
+            raise ValueError("return_optimization=True only valid if method='sambo'")
 
         def _tuple(x):
             return x if isinstance(x, Sequence) and not isinstance(x, str) else (x,)
@@ -2218,67 +2221,47 @@ class Backtest:
                                     [p.values() for p in param_combos],
                                     names=next(iter(param_combos)).keys()))
 
-            def _batch(seq):
-                n = np.clip(int(len(seq) // (os.cpu_count() or 1)), 1, 300)
-                for i in range(0, len(seq), n):
-                    yield seq[i:i + n]
+            if mp.get_start_method(allow_none=False) != 'fork':
+                 if os.name == 'posix': # Only warn on POSIX if not using fork
+                     warnings.warn("For multiprocessing support in `Backtest.optimize()` "
+                                   "set multiprocessing start method to 'fork'.", UserWarning)
 
-            # Save necessary objects into "global" state; pass into concurrent executor
-            # (and thus pickle) nothing but two numbers; receive nothing but numbers.
-            # With start method "fork", children processes will inherit parent address space
-            # in a copy-on-write manner, achieving better performance/RAM benefit.
-            backtest_uuid = np.random.random()
-            param_batches = list(_batch(param_combos))
-            Backtest._mp_backtests[backtest_uuid] = (self, param_batches, maximize)  # type: ignore
-            try:
-                # If multiprocessing start method is 'fork' (i.e. on POSIX), use
-                # a pool of processes to compute results in parallel.
-                # Otherwise (i.e. on Windos), sequential computation will be "faster".
-                if mp.get_start_method(allow_none=False) == 'fork':
-                    with ProcessPoolExecutor() as executor:
-                        futures = [executor.submit(Backtest._mp_task, backtest_uuid, i)
-                                   for i in range(len(param_batches))]
-                        for future in _tqdm(as_completed(futures), total=len(futures),
-                                            desc='Backtest.optimize'):
-                            batch_index, values = future.result()
-                            for value, params in zip(values, param_batches[batch_index]):
-                                heatmap[tuple(params.values())] = value
-                else:
-                    if os.name == 'posix':
-                        warnings.warn("For multiprocessing support in `Backtest.optimize()` "
-                                      "set multiprocessing start method to 'fork'.")
-                    for batch_index in _tqdm(range(len(param_batches))):
-                        _, values = Backtest._mp_task(backtest_uuid, batch_index)
-                        for value, params in zip(values, param_batches[batch_index]):
-                            heatmap[tuple(params.values())] = value
-            finally:
-                del Backtest._mp_backtests[backtest_uuid]
+            with mp.Pool() as pool, \
+                    SharedMemoryManager() as smm:
 
-            best_params = heatmap.idxmax()
+                with patch(self, '_data', None):
+                    bt = copy(self)  # bt._data will be reassigned in _mp_task worker
+                results = _tqdm(
+                    pool.imap(Backtest._mp_task,
+                              ((bt, smm.df2shm(self._data), params_batch)
+                               for params_batch in _batch(param_combos))),
+                    total=len(param_combos),
+                    desc='Backtest.optimize'
+                )
+                for param_batch, result in zip(_batch(param_combos), results):
+                    for params, stats in zip(param_batch, result):
+                        if stats is not None:
+                            heatmap[tuple(params.values())] = maximize(stats)
 
-            if pd.isnull(best_params):
+            if pd.isnull(heatmap).all():
                 # No trade was made in any of the runs. Just make a random
                 # run so we get some, if empty, results
                 stats = self.run(**param_combos[0])
             else:
+                best_params = heatmap.idxmax(skipna=True)
                 stats = self.run(**dict(zip(heatmap.index.names, best_params)))
 
             if return_heatmap:
                 return stats, heatmap
             return stats
 
-        def _optimize_skopt() -> Union[pd.Series,
+        def _optimize_sambo() -> Union[pd.Series,
                                        Tuple[pd.Series, pd.Series],
                                        Tuple[pd.Series, pd.Series, dict]]:
             try:
-                from skopt import forest_minimize
-                from skopt.callbacks import DeltaXStopper
-                from skopt.learning import ExtraTreesRegressor
-                from skopt.space import Categorical, Integer, Real
-                from skopt.utils import use_named_args
+                import sambo
             except ImportError:
-                raise ImportError("Need package 'scikit-optimize' for method='skopt'. "
-                                  "pip install scikit-optimize") from None
+                raise ImportError("Need package 'sambo' for method='sambo'. pip install sambo") from None
 
             nonlocal max_tries
             max_tries = (200 if max_tries is None else
@@ -2289,90 +2272,79 @@ class Backtest:
             for key, values in kwargs.items():
                 values = np.asarray(values)
                 if values.dtype.kind in 'mM':  # timedelta, datetime64
-                    # these dtypes are unsupported in skopt, so convert to raw int
+                    # these dtypes are unsupported in SAMBO, so convert to raw int
                     # TODO: save dtype and convert back later
-                    values = values.astype(int)
+                    values = values.astype(np.int64)
 
                 if values.dtype.kind in 'iumM':
-                    dimensions.append(Integer(low=values.min(), high=values.max(), name=key))
+                    dimensions.append((values.min(), values.max() + 1))
                 elif values.dtype.kind == 'f':
-                    dimensions.append(Real(low=values.min(), high=values.max(), name=key))
+                    dimensions.append((values.min(), values.max()))
                 else:
-                    dimensions.append(Categorical(values.tolist(), name=key, transform='onehot'))
+                    dimensions.append(values.tolist())
 
-            # Avoid recomputing re-evaluations:
-            # "The objective has been evaluated at this point before."
-            # https://github.com/scikit-optimize/scikit-optimize/issues/302
-            memoized_run = lru_cache()(lambda tup: self.run(**dict(tup)))
+            # Avoid recomputing re-evaluations
+            @lru_cache()
+            def memoized_run(tup):
+                nonlocal maximize, self
+                stats = self.run(**dict(tup))
+                return -maximize(stats)
 
-            # np.inf/np.nan breaks sklearn, np.finfo(float).max breaks skopt.plots.plot_objective
-            INVALID = 1e300
-            progress = iter(_tqdm(repeat(None), total=max_tries, desc='Backtest.optimize'))
+            progress = iter(_tqdm(repeat(None), total=max_tries, leave=False, desc='Backtest.optimize'))
+            _names = tuple(kwargs.keys())
 
-            @ use_named_args(dimensions=dimensions)
-            def objective_function(**params):
+            def objective_function(x):
+                nonlocal progress, memoized_run, constraint, _names
                 next(progress)
-                # Check constraints
-                # TODO: Adjust after https://github.com/scikit-optimize/scikit-optimize/pull/971
-                if not constraint(AttrDict(params)):
-                    return INVALID
-                res = memoized_run(tuple(params.items()))
-                value = -maximize(res)
-                if np.isnan(value):
-                    return INVALID
-                return value
+                value = memoized_run(tuple(zip(_names, x)))
+                return 0 if np.isnan(value) else value
 
-            with warnings.catch_warnings():
-                warnings.filterwarnings(
-                    'ignore', 'The objective has been evaluated at this point before.')
+            def cons(x):
+                nonlocal constraint, _names
+                return constraint(AttrDict(zip(_names, x)))
 
-                res = forest_minimize(
-                    func=objective_function,
-                    dimensions=dimensions,
-                    n_calls=max_tries,
-                    base_estimator=ExtraTreesRegressor(n_estimators=20, min_samples_leaf=2),
-                    acq_func='LCB',
-                    kappa=3,
-                    n_initial_points=min(max_tries, 20 + 3 * len(kwargs)),
-                    initial_point_generator='lhs',  # 'sobel' requires n_initial_points ~ 2**N
-                    callback=DeltaXStopper(9e-7),
-                    random_state=random_state)
+            res = sambo.minimize(
+                fun=objective_function,
+                bounds=dimensions,
+                constraints=cons,
+                max_iter=max_tries,
+                method='sceua',
+                rng=random_state)
 
             stats = self.run(**dict(zip(kwargs.keys(), res.x)))
             output = [stats]
 
             if return_heatmap:
-                heatmap = pd.Series(dict(zip(map(tuple, res.x_iters), -res.func_vals)),
+                heatmap = pd.Series(dict(zip(map(tuple, res.xv), -res.funv)),
                                     name=maximize_key)
                 heatmap.index.names = kwargs.keys()
-                heatmap = heatmap[heatmap != -INVALID]
                 heatmap.sort_index(inplace=True)
                 output.append(heatmap)
 
             if return_optimization:
-                valid = res.func_vals != INVALID
-                res.x_iters = list(compress(res.x_iters, valid))
-                res.func_vals = res.func_vals[valid]
                 output.append(res)
 
             return stats if len(output) == 1 else tuple(output)
 
         if method == 'grid':
             output = _optimize_grid()
-        elif method == 'skopt':
-            output = _optimize_skopt()
+        elif method in ('sambo', 'skopt'):
+            output = _optimize_sambo()
         else:
-            raise ValueError(f"Method should be 'grid' or 'skopt', not {method!r}")
+            raise ValueError(f"Method should be 'grid' or 'sambo', not {method!r}")
         return output
 
-    @ staticmethod
-    def _mp_task(backtest_uuid, batch_index):
-        bt, param_batches, maximize_func = Backtest._mp_backtests[backtest_uuid]
-        return batch_index, [maximize_func(stats) if stats['# Trades'] else np.nan
-                             for stats in (bt.run(**params)
-                                           for params in param_batches[batch_index])]
-
-    _mp_backtests: Dict[float, Tuple['Backtest', List, Callable]] = {}
+    @staticmethod
+    def _mp_task(arg):
+        bt, data_shm, params_batch = arg
+        bt._data, shm = SharedMemoryManager.shm2df(data_shm)
+        try:
+            return [stats.filter(regex='^[^_]') if stats['# Trades'] else None
+                    for stats in (bt.run(**params)
+                                  for params in params_batch)]
+        finally:
+            for shmem in shm:
+                shmem.close()
 
     def plot(self, *, results: pd.Series = None, filename=None, plot_width=None,
              plot_equity=True, plot_return=False, plot_pl=True,

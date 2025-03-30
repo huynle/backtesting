@@ -1,12 +1,28 @@
+from __future__ import annotations
+
+import os
+import sys
 import warnings
-from datetime import datetime
+from contextlib import contextmanager
 from functools import partial
+from itertools import chain
+from datetime import datetime
+from multiprocessing import resource_tracker as _mprt
+from multiprocessing import shared_memory as _mpshm
 from numbers import Number
+from threading import Lock
 from typing import Callable, Dict, List, Optional, Sequence, Union, cast
+from pandas_ta import AnalysisIndicators
 
 import numpy as np
 import pandas as pd
-from pandas_ta import AnalysisIndicators
+
+try:
+    from tqdm.auto import tqdm as _tqdm
+    _tqdm = partial(_tqdm, leave=False)
+except ImportError:
+    def _tqdm(seq, **_):
+        return seq
 
 
 def try_(lazy_func, default=None, exception=Exception):
@@ -14,6 +30,20 @@ def try_(lazy_func, default=None, exception=Exception):
         return lazy_func()
     except exception:
         return default
+
+
+@contextmanager
+def patch(obj, attr, newvalue):
+    had_attr = hasattr(obj, attr)
+    orig_value = getattr(obj, attr, None)
+    setattr(obj, attr, newvalue)
+    try:
+        yield
+    finally:
+        if had_attr:
+            setattr(obj, attr, orig_value)
+        else:
+            delattr(obj, attr)
 
 
 def _as_str(value) -> str:
@@ -35,6 +65,13 @@ def _as_list(value) -> List:
     if isinstance(value, Sequence) and not isinstance(value, str):
         return list(value)
     return [value]
+
+
+def _batch(seq):
+    # XXX: Replace with itertools.batched
+    n = np.clip(int(len(seq) // (os.cpu_count() or 1)), 1, 300)
+    for i in range(0, len(seq), n):
+        yield seq[i:i + n]
 
 
 def _data_period(index) -> Union[pd.Timedelta, Number]:
@@ -226,6 +263,119 @@ try:
     del pd.DataFrame.ta
 except AttributeError:
     pass
+
+if sys.version_info >= (3, 13):
+    SharedMemory = _mpshm.SharedMemory
+else:
+    class SharedMemory(_mpshm.SharedMemory):
+        # From https://github.com/python/cpython/issues/82300#issuecomment-2169035092
+        __lock = Lock()
+
+        def __init__(self, *args, track: bool = True, **kwargs):
+            self._track = track
+            if track:
+                return super().__init__(*args, **kwargs)
+            with self.__lock:
+                with patch(_mprt, 'register', lambda *a, **kw: None):
+                    super().__init__(*args, **kwargs)
+
+        def unlink(self):
+            if _mpshm._USE_POSIX and self._name:
+                _mpshm._posixshmem.shm_unlink(self._name)
+                if self._track:
+                    _mprt.unregister(self._name, "shared_memory")
+
+
+class SharedMemoryManager:
+    """
+    A simple shared memory contextmanager based on
+    https://docs.python.org/3/library/multiprocessing.shared_memory.html#multiprocessing.shared_memory.SharedMemory
+    """
+    def __init__(self, create=False) -> None:
+        self._shms: list[SharedMemory] = []
+        self.__create = create
+
+    def SharedMemory(self, *, name=None, create=False, size=0, track=True):
+        shm = SharedMemory(name=name, create=create, size=size, track=track)
+        shm._create = create
+        # Essential to keep refs on Windows
+        # https://stackoverflow.com/questions/74193377/filenotfounderror-when-passing-a-shared-memory-to-a-new-process#comment130999060_74194875  # noqa: E501
+        self._shms.append(shm)
+        return shm
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args, **kwargs):
+        for shm in self._shms:
+            try:
+                shm.close()
+                if shm._create:
+                    shm.unlink()
+            except Exception:
+                warnings.warn(f'Failed to unlink shared memory {shm.name!r}',
+                              category=ResourceWarning, stacklevel=2)
+                raise
+
+    def arr2shm(self, vals):
+        """Array to shared memory. Returns (shm_name, shape, dtype) used for restore."""
+        assert vals.ndim == 1, (vals.ndim, vals.shape, vals)
+        shm = self.SharedMemory(size=vals.nbytes, create=True)
+        buf = np.ndarray(vals.shape, dtype=vals.dtype, buffer=shm.buf)
+        buf[:] = vals[:]  # Copy into shared memory
+        return shm.name, vals.shape, vals.dtype
+
+    def df2shm(self, df):
+        return tuple((
+            (column, *self.arr2shm(values))
+            for column, values in chain([(self._DF_INDEX_COL, df.index)], df.items())
+        ))
+
+    @staticmethod
+    def shm2arr(shm, shape, dtype):
+        arr = np.ndarray(shape, dtype=dtype, buffer=shm.buf)
+        arr.setflags(write=False)
+        return arr
+
+    _DF_INDEX_COL = '__bt_index'
+
+    @staticmethod
+    def shm2df(data_shm):
+        index_data = None
+        data_dict = {}
+        shm_map = {}
+        shms_to_return = []
+
+        for item in data_shm:
+            col, name, shape, dtype = item
+            # Create SharedMemory instance without tracking for read-only access in worker
+            shm = SharedMemory(name=name, create=False, track=False)
+            shm_map[name] = shm  # Keep reference to prevent premature release on some OS
+            shms_to_return.append(shm)
+            arr = SharedMemoryManager.shm2arr(shm, shape, dtype)
+            if col == SharedMemoryManager._DF_INDEX_COL:
+                index_data = arr
+            else:
+                data_dict[col] = arr
+
+        if index_data is None:
+            raise ValueError("Index data not found in shared memory bundle.")
+
+        df = pd.DataFrame(data_dict)
+
+        # Check if original columns were MultiIndex tuples based on the keys stored
+        if data_dict and all(isinstance(c, tuple) for c in data_dict.keys()):
+             # Ensure columns are sorted correctly if necessary, though dict order is preserved >= 3.7
+             df.columns = pd.MultiIndex.from_tuples(df.columns)
+
+        # Reconstruct index
+        df.index = index_data
+        df.index.name = None  # Restore original state (index name is not stored)
+
+        # Return df and the list of shm objects to keep refs
+        return df, shms_to_return
+
+
 
 
 class PicklableAnalysisIndicators(AnalysisIndicators):
