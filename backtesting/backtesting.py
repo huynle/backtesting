@@ -6,6 +6,7 @@ module directly, e.g.
     backtesting import Backtest, Strategy
 """
 import functools
+import functools
 import multiprocessing as mp
 import os
 import sys
@@ -586,7 +587,7 @@ class Strategy(ABC):
     def I(self,  # noqa: E743
           funcval: Union[pd.DataFrame, pd.Series, Callable], *args,
           name=None, plot=True, overlay=None, color=None, scatter=False,
-          ** kwargs) -> Union[pd.DataFrame, pd.Series]:
+          ** kwargs) -> Union[pd.DataFrame, pd.Series, np.ndarray]:
         """
         Declare an indicator. An indicator is just an array of values,
         but one that is revealed gradually in
@@ -936,6 +937,41 @@ class Strategy(ABC):
         """
         return None
 
+    def start_on_day(self, n: int):
+        """Hint to start the backtest on a specific day.
+
+        This can be used to define a warm-up period, ensuring at least `n` days of data
+        are available when `next()` is called for the first time.
+
+        When the backtest starts depends both on `n` and on the availability of indicators.
+        If indicators are defined, the backtest will start when all indicators have
+        valid data or on the `n`-th day, whichever comes later.
+
+        This method should be called in `init()`.
+
+        Args:
+            n: Day index to start on. Must be within [0, len(data)-1].
+        """
+        assert 0 <= n < len(self._data), f"day must be within [0, {len(self._data)-1}]"
+        self._start_on_day = n
+
+    @classmethod
+    def prepare_data(cls, tickers: 'List[str]', start: str) -> pd.DataFrame | None:
+        """Prepare data for trading.
+
+        This class method can be overridden in a `Strategy` implementation to provide
+        data for trading. The can be useful when the data is not provided externally
+        and the strategy wants to bring its own data, e.g. from a database.
+
+        Args:
+            tickers: List of tickers to fetch data for.
+            start: Start date of the data to fetch.
+
+        Returns:
+            A `pd.DataFrame` with 2-level columns as required by `Backtest()` or None.
+        """
+        return None
+
 
 class Position:
     """
@@ -1165,6 +1201,11 @@ class Order:
         [OCO]: https://www.investopedia.com/terms/o/oco.asp
         """
         return bool(self.__parent_trade)
+
+    @property
+    def entry_time(self) -> datetime:
+        """Time of when the order is created."""
+        return self.__entry_time
 
     @property
     def entry_time(self) -> datetime:
