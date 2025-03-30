@@ -1226,6 +1226,7 @@ class TestBacktestMulti(object):
         bt = Backtest(MULTI_ASSET_DATA, MultiAssetStrategy, cash=1000000)
         stats = bt.run()
         assert stats["# Trades"] == 83
+        assert stats["_positions"] == {'GOOG': 7127, 'SPY': 0, 'Cash': 30}
 
     def test_multi_asset_rebalance(self):
         class RebalanceStrategy(Strategy):
