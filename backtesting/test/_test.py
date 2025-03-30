@@ -12,6 +12,7 @@ from runpy import run_path
 from tempfile import NamedTemporaryFile, gettempdir
 from unittest import TestCase
 from unittest.mock import patch as patcher
+import pytest
 
 import numpy as np
 import pandas as pd
@@ -35,7 +36,7 @@ from backtesting.lib import (
     random_ohlc_data,
     resample_apply,
 )
-from backtesting.test import BTCUSD, EURUSD, GOOG, SMA
+from backtesting.test import BTCUSD, EURUSD, GOOG, SMA, SPY
 
 SHORT_DATA = GOOG.iloc[:20]  # Short data for fast tests with no indicator lag
 
@@ -1128,3 +1129,124 @@ class TestDocs(TestCase):
 if __name__ == "__main__":
     warnings.filterwarnings("error")
     unittest.main()
+
+
+
+def SMA(arr: pd.Series, n: int) -> pd.Series:
+    """
+    Returns `n`-period simple moving average of array `arr`.
+    """
+    return arr.rolling(n).mean()
+
+# Create a multi-asset dataframe from the imported GOOG and SPY data
+MULTI_ASSET_DATA = pd.DataFrame({
+    ("GOOG", "Open"): GOOG["Open"],
+    ("GOOG", "High"): GOOG["High"],
+    ("GOOG", "Low"): GOOG["Low"],
+    ("GOOG", "Close"): GOOG["Close"],
+    ("GOOG", "Volume"): GOOG["Volume"],
+    ("SPY", "Open"): SPY["Open"],
+    ("SPY", "High"): SPY["High"],
+    ("SPY", "Low"): SPY["Low"],
+    ("SPY", "Close"): SPY["Close"],
+    ("SPY", "Volume"): SPY["Volume"]
+})
+
+
+def calculate_ema(data, period, smoothing=2):
+    """
+    Calculate Exponential Moving Average
+    
+    Parameters:
+    data (array-like): Price data series
+    period (int): EMA period (e.g., 10, 20, 50)
+    smoothing (int): Smoothing factor, typically 2 for standard EMA
+    
+    Returns:
+    array-like: EMA values
+    """
+    ema = [0] * len(data)
+    # Start with SMA for the initial EMA value
+    ema[period-1] = sum(data[:period]) / period
+    
+    # Calculate multiplier
+    multiplier = smoothing / (period + 1)
+    
+    # Calculate EMA for remaining data points
+    for i in range(period, len(data)):
+        ema[i] = (data[i] - ema[i-1]) * multiplier + ema[i-1]
+    
+    return ema
+
+
+
+
+class TestBacktestMulti(object):
+    def test_multi_asset_run(self):
+
+        class MultiAssetStrategy(Strategy):
+            """
+            A strategy that trades GOOG and SPY based on simple moving average crossovers.
+            
+            This strategy buys GOOG when its closing price is above its 10-day SMA and
+            sells SPY when its closing price is below its 10-day SMA.
+            """
+            def init(self):
+                # Calculate 10-day SMA for GOOG
+                self.ema_goog = self.I(calculate_ema, self.data["GOOG", "Close"].s, 10)
+                
+                # Calculate 10-day SMA for SPY
+                self.ema_spy = self.I(calculate_ema, self.data["SPY", "Close"].s, 10)
+                
+                # Calculate EMAs for SPY to determine market health
+                self.ema10_spy = self.I(calculate_ema, self.data["SPY", "Close"].s, 10, name="SPY_EMA10")
+                self.ema20_spy = self.I(calculate_ema, self.data["SPY", "Close"].s, 20, name="SPY_EMA20")
+                self.ema50_spy = self.I(calculate_ema, self.data["SPY", "Close"].s, 50, name="SPY_EMA50")
+                
+                # Calculate EMAs for GOOG
+                self.ema20_goog = self.I(calculate_ema, self.data["GOOG", "Close"].s, 20, name="GOOG_EMA20")
+
+            def next(self):
+                # Check if market is healthy: SPY 10 EMA > 20 EMA and price > 50 EMA
+                market_healthy = (self.ema10_spy[-1] > self.ema20_spy[-1]) and (self.data["SPY", "Close"][-1] > self.ema50_spy[-1])
+                
+                # If market is healthy and GOOG is above its 10-day SMA, buy GOOG
+                if market_healthy and self.data["GOOG", "Close"][-1] > self.ema_goog[-1]:
+                    if not self.position("GOOG"):
+                        # self.buy(ticker="GOOG", size=0.1)
+                        self.buy(ticker="GOOG")
+                
+                # If GOOG falls below its 20 EMA, liquidate 50% of position
+                if self.position("GOOG") and self.data["GOOG", "Close"][-1] < self.ema20_goog[-1]:
+                    current_size = self.position("GOOG").size
+                    # self.position("GOOG").close(portion=0.5)
+                    self.position("GOOG").close()
+
+
+        bt = Backtest(MULTI_ASSET_DATA, MultiAssetStrategy, cash=1000000)
+        stats = bt.run()
+        assert stats["# Trades"] == 83
+
+    def test_multi_asset_rebalance(self):
+        class RebalanceStrategy(Strategy):
+            def init(self):
+                pass
+
+            def next(self):
+                if len(self.data) % 10 == 0:  # Rebalance every 10 days
+                    self.alloc.assume_zero()
+                    self.alloc.weights["GOOG"] = 1.0
+                    self.alloc.weights["SPY"] = 0
+                    # Set cash_reserve to 0 for closer target allocation in test
+                    self.rebalance(cash_reserve=0)
+
+        bt = Backtest(MULTI_ASSET_DATA, RebalanceStrategy, cash=1_000_000)
+        stats = bt.run()
+        assert stats["# Trades"] > 0
+        # bt.plot()
+        # # Check if final equity distribution is roughly 60/40
+        # final_equity = stats._equity_curve.iloc[-1]
+        # goog_value = final_equity["GOOG"]
+        # SPY_value = final_equity["SPY"]
+        # total_value = goog_value + SPY_value
+        # assert goog_value / total_value == pytest.approx(0.6, abs=0.1)
