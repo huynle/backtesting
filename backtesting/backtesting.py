@@ -721,7 +721,7 @@ class Strategy(ABC):
 
         See also `Strategy.sell()`.
         """
-        assert 0 < size < 1 or round(size) == size, \
+        assert 0 < size < 1 or round(size) == size >= 1, \
             "size must be a positive fraction of equity, or a positive whole number of units"
         return self._broker.new_order(ticker, size, limit, stop, sl, tp, tag)
 
@@ -744,7 +744,7 @@ class Strategy(ABC):
             If you merely want to close an existing long position,
             use `Position.close()` or `Trade.close()`.
         """
-        assert 0 < size < 1 or round(size) == size, \
+        assert 0 < size < 1 or round(size) == size >= 1, \
             "size must be a positive fraction of equity, or a positive whole number of units"
         return self._broker.new_order(ticker, -size, limit, stop, sl, tp, tag)
 
@@ -1398,7 +1398,7 @@ class Trade:
 
 
 class _Broker:
-    def __init__(self, *, data: _Data, cash, holding, commission, margin, trade_on_close, hedging, exclusive_orders,
+    def __init__(self, *, data: _Data, cash, spread, holding, commission, margin, trade_on_close, hedging, exclusive_orders,
                  trade_start_date, lot_size, fail_fast, storage):
         assert 0 < cash, f"cash should be >0, is {cash}"
         assert -.1 <= commission < .1, \
@@ -1408,7 +1408,22 @@ class _Broker:
         self._data = data
         self._cash = cash
         self._holding = holding
-        self._commission = commission
+
+        if callable(commission):
+            self._commission = commission
+        else:
+            try:
+                self._commission_fixed, self._commission_relative = commission
+            except TypeError:
+                self._commission_fixed, self._commission_relative = 0, commission
+            assert self._commission_fixed >= 0, 'Need fixed cash commission in $ >= 0'
+            assert -.1 <= self._commission_relative < .1, \
+                ("commission should be between -10% "
+                 f"(e.g. market-maker's rebates) and 10% (fees), is {self._commission_relative}")
+            self._commission = self._commission_func
+
+
+        self._spread = spread
         self._leverage = 1 / margin
         self._trade_on_close = trade_on_close
         self._hedging = hedging
@@ -1436,6 +1451,9 @@ class _Broker:
                     self._cash += size * self._data[ticker, 'Close'][self._trade_start_bar]
         self.positions: Dict[str, Position] = {ticker: Position(self, ticker) for ticker in self._data.tickers}
         self.closed_trades: List[Trade] = []
+
+    def _commission_func(self, order_size, price):
+        return self._commission_fixed + abs(order_size) * price * self._commission_relative
 
     def __repr__(self):
         pos = ','.join([f'{k}:{p.size}' for k, p in self.positions.items()])
@@ -1548,7 +1566,7 @@ class _Broker:
         Long/short `price`, adjusted for commisions.
         In long positions, the adjusted price is a fraction higher, and vice versa.
         """
-        return (price or self.last_price(ticker)) * (1 + copysign(self._commission, size))
+        return (price or self.last_price(ticker)) * (1 + copysign(self._spread, size))
 
     def equity(self, ticker: str = None) -> float:
         if ticker:
@@ -1823,6 +1841,75 @@ class Backtest:
     `backtesting.backtesting.Backtest.run` to run a backtest
     instance, or `backtesting.backtesting.Backtest.optimize` to
     optimize it.
+
+    Initialize a backtest. Requires data and a strategy to test.
+
+    `data` is a `pd.DataFrame` with 2-level columns:
+    1st level is a list of tickers, and
+    2nd level is `Open`, `High`, `Low`, `Close`, and `Volume`.
+    If the strategy works only on one asset, the 1st level can be dropped.
+    If any columns are missing, set them to what you have available,
+    e.g.
+
+        df['Open'] = df['High'] = df['Low'] = df['Close']
+        df['Volumn'] = 0
+
+    The passed data frame can contain additional columns that
+    can be used by the strategy (e.g. sentiment info).
+    DataFrame index can be either a datetime index (timestamps)
+    or a monotonic range index (i.e. a sequence of periods).
+
+    `strategy` is a `backtesting.backtesting.Strategy`
+    _subclass_ (not an instance).
+
+    `cash` is the initial cash to start with.
+
+    `holding` is a mapping of preexisting assets and their sizes before
+    backtest begins, e.g.
+
+        {'AAPL': 10, 'MSFT': 5}
+
+    `commission` is the commission ratio. E.g. if your broker's commission
+    is 1% of trade value, set commission to `0.01`. Note, if you wish to
+    account for bid-ask spread, you can approximate doing so by increasing
+    the commission, e.g. set it to `0.0002` for commission-less forex
+    trading where the average spread is roughly 0.2‰ of asking price.
+
+    `margin` is the required margin (ratio) of a leveraged account.
+    No difference is made between initial and maintenance margins.
+    To run the backtest using e.g. 50:1 leverge that your broker allows,
+    set margin to `0.02` (1 / leverage).
+
+    If `trade_on_close` is `True`, market orders will be filled
+    with respect to the current bar's closing price instead of the
+    next bar's open.
+
+    If `hedging` is `True`, allow trades in both directions simultaneously.
+    If `False`, the opposite-facing orders first close existing trades in
+    a [FIFO] manner.
+
+    If `exclusive_orders` is `True`, each new order auto-closes the previous
+    trade/position, making at most a single trade (long or short) in effect
+    at each time.
+
+    If `trade_start_date` is not None, orders generated before the date are
+    surpressed and ignored in backtesting.
+
+    `lot_size` is the minimum increment of shares you buy in one order. Order
+    size will be rounded to integer multiples during rebalance.
+
+    `fail_fast`, when True, instructs the backtester to bail out when
+    cash is not enough to cover an order. This can be used in live trading
+    to detect issues early. If False, backtesting will ignore the order and
+    continue, which can be convenient during algorithm research.
+
+    `storage`, when not None, is a dictionary that contains saved states from
+    past runs. Modification to storage is persisted and can be made available
+    for future runs.
+
+    [FIFO]: https://www.investopedia.com/terms/n/nfa-compliance-rule-2-43b.asp
+
+
     """
 
     def __init__(self,
@@ -1830,8 +1917,9 @@ class Backtest:
                  strategy: Type[Strategy],
                  *,
                  cash: float = 10_000,
+                 spread: float = .0,
                  holding: dict = {},
-                 commission: float = .0,
+                 commission: Union[float, Tuple[float, float]] = .0,
                  margin: float = 1.,
                  trade_on_close=False,
                  hedging=False,
@@ -1841,74 +1929,6 @@ class Backtest:
                  fail_fast=True,
                  storage: dict | None = None,
                  ):
-        """
-        Initialize a backtest. Requires data and a strategy to test.
-
-        `data` is a `pd.DataFrame` with 2-level columns:
-        1st level is a list of tickers, and
-        2nd level is `Open`, `High`, `Low`, `Close`, and `Volume`.
-        If the strategy works only on one asset, the 1st level can be dropped.
-        If any columns are missing, set them to what you have available,
-        e.g.
-
-            df['Open'] = df['High'] = df['Low'] = df['Close']
-            df['Volumn'] = 0
-
-        The passed data frame can contain additional columns that
-        can be used by the strategy (e.g. sentiment info).
-        DataFrame index can be either a datetime index (timestamps)
-        or a monotonic range index (i.e. a sequence of periods).
-
-        `strategy` is a `backtesting.backtesting.Strategy`
-        _subclass_ (not an instance).
-
-        `cash` is the initial cash to start with.
-
-        `holding` is a mapping of preexisting assets and their sizes before
-        backtest begins, e.g.
-
-            {'AAPL': 10, 'MSFT': 5}
-
-        `commission` is the commission ratio. E.g. if your broker's commission
-        is 1% of trade value, set commission to `0.01`. Note, if you wish to
-        account for bid-ask spread, you can approximate doing so by increasing
-        the commission, e.g. set it to `0.0002` for commission-less forex
-        trading where the average spread is roughly 0.2‰ of asking price.
-
-        `margin` is the required margin (ratio) of a leveraged account.
-        No difference is made between initial and maintenance margins.
-        To run the backtest using e.g. 50:1 leverge that your broker allows,
-        set margin to `0.02` (1 / leverage).
-
-        If `trade_on_close` is `True`, market orders will be filled
-        with respect to the current bar's closing price instead of the
-        next bar's open.
-
-        If `hedging` is `True`, allow trades in both directions simultaneously.
-        If `False`, the opposite-facing orders first close existing trades in
-        a [FIFO] manner.
-
-        If `exclusive_orders` is `True`, each new order auto-closes the previous
-        trade/position, making at most a single trade (long or short) in effect
-        at each time.
-
-        If `trade_start_date` is not None, orders generated before the date are
-        surpressed and ignored in backtesting.
-
-        `lot_size` is the minimum increment of shares you buy in one order. Order
-        size will be rounded to integer multiples during rebalance.
-
-        `fail_fast`, when True, instructs the backtester to bail out when
-        cash is not enough to cover an order. This can be used in live trading
-        to detect issues early. If False, backtesting will ignore the order and
-        continue, which can be convenient during algorithm research.
-
-        `storage`, when not None, is a dictionary that contains saved states from
-        past runs. Modification to storage is persisted and can be made available
-        for future runs.
-
-        [FIFO]: https://www.investopedia.com/terms/n/nfa-compliance-rule-2-43b.asp
-        """
 
         if not (isinstance(strategy, type) and issubclass(strategy, Strategy)):
             raise TypeError(f'`strategy` must be a Strategy sub-type. Got {type(strategy)}')
@@ -1917,6 +1937,11 @@ class Backtest:
         if not isinstance(commission, Number):
             raise TypeError('`commission` must be a float value, percent of '
                             'entry order price')
+        if not isinstance(commission, (Number, tuple)) and not callable(commission):
+            raise TypeError('`commission` must be a float percent of order value, '
+                            'a tuple of `(fixed, relative)` commission, '
+                            'or a function that takes `(order_size, price)`'
+                            'and returns commission dollar value')
 
         data = data.copy(deep=False)
         ohlc = ['Open', 'High', 'Low', 'Close']
@@ -1960,7 +1985,7 @@ class Backtest:
 
         self._data = data
         self._broker = partial(
-            _Broker, cash=cash, holding=holding, commission=commission, margin=margin,
+            _Broker, cash=cash, spread=spread, holding=holding, commission=commission, margin=margin,
             trade_on_close=trade_on_close, hedging=hedging,
             exclusive_orders=exclusive_orders,
             trade_start_date=datetime.strptime(trade_start_date, '%Y-%m-%d') if trade_start_date else None,
