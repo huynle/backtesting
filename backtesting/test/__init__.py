@@ -26,4 +26,7 @@ def SMA(arr: pd.Series, n: int) -> pd.Series:
     """
     Returns `n`-period simple moving average of array `arr`.
     """
+    # s = pd.Series(arr).rolling(n).mean()
+    # s.set_index(arr.index)
+    # return s
     return pd.Series(arr).rolling(n).mean()

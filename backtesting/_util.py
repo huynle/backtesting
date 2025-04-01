@@ -81,36 +81,66 @@ def _data_period(index) -> Union[pd.Timedelta, Number]:
 
 
 def _strategy_indicators(strategy):
-    return {attr: indicator
-            for attr, indicator in strategy.__dict__.items()
-            if isinstance(indicator, _Indicator)}.items()
+    # return {attr: indicator
+    #         for attr, indicator in strategy.__dict__.items()
+    #         if isinstance(indicator, _Indicator)}.items()
+    result = {}
+    for attr, indicator in strategy.__dict__.items():
+        if isinstance(indicator, _Indicator):
+            result[attr] = indicator
+    return result.items()
 
+
+
+    # result = {}
+    # for attr, indicator in strategy.__dict__.items():
+    #     if any([indicator is item for item in strategy._indicators]):
+    #         result[attr] = indicator
+    # return result
 
 def _indicator_warmup_nbars(strategy):
     if strategy is None:
         return 0
-    nbars = max((np.isnan(indicator.astype(float)).argmin(axis=-1).max()
-                 for _, indicator in _strategy_indicators(strategy)
-                 if not indicator._opts['scatter']), default=0)
-    return nbars
+    nbars = 0  # Default value if no indicators meet the criteria
+
+    for _, indicator in _strategy_indicators(strategy):
+        # Skip scatter indicators
+        if indicator._opts['scatter']:
+            continue
+        
+        # Convert indicator to float
+        float_indicator = indicator.astype(float)
+        
+        # Find the first non-NaN index for each row
+        first_non_nan_indices = np.isnan(float_indicator).argmin(axis=-1)
+        
+        # Get the maximum of these indices
+        max_index = first_non_nan_indices.max()
+        
+        # Update nbars if this max_index is larger
+        if max_index > nbars:
+            nbars = max_index
+        return nbars
 
 
 class _Array(np.ndarray):
-    """Array with a corresponding DataFrame/Series attachment."""
-
-    def __new__(cls, array, df: Union[Callable, pd.DataFrame, pd.Series]):
-        if not callable(df) and not isinstance(df, (pd.DataFrame, pd.Series)):
-            raise ValueError(f'df must be callable or pd.DataFrame/pd.Series. Got {type(df)}')
+    """
+    ndarray extended to supply .name and other arbitrary properties
+    in ._opts dict.
+    """
+    def __new__(cls, array, *, name=None, **kwargs):
         obj = np.asarray(array).view(cls)
-        obj.__df = df
+        obj.name = name or array.name
+        obj._opts = kwargs
         return obj
 
     def __array_finalize__(self, obj):
-        if obj is None:
-            return
-        self.__df = getattr(obj, '__df', None)
+        if obj is not None:
+            self.name = getattr(obj, 'name', '')
+            self._opts = getattr(obj, '_opts', {})
 
-    # Make sure __df are carried over when (un-)pickling.
+    # Make sure properties name and _opts are carried over
+    # when (un-)pickling.
     def __reduce__(self):
         value = super().__reduce__()
         return value[:2] + (value[2] + (self.__dict__,),)
@@ -119,25 +149,34 @@ class _Array(np.ndarray):
         self.__dict__.update(state[-1])
         super().__setstate__(state[:-1])
 
-    def __repr__(self) -> str:
-        return super().__repr__() + f'\nwith df:\n{self.__df}'
+    def __bool__(self):
+        try:
+            return bool(self[-1])
+        except IndexError:
+            return super().__bool__()
 
-    @property
-    def df(self) -> Union[pd.DataFrame, pd.Series]:
-        if callable(self.__df):
-            self.__df = self.__df()
-        return self.__df
+    def __float__(self):
+        try:
+            return float(self[-1])
+        except IndexError:
+            return super().__float__()
+
+    def to_series(self):
+        warnings.warn("`.to_series()` is deprecated. For pd.Series conversion, use accessor `.s`")
+        return self.s
 
     @property
     def s(self) -> pd.Series:
-        if isinstance(self.df, pd.Series):
-            return self.df
-        else:
-            raise ValueError(f'Value is not a pd.Series. Shape {self.df.shape}')
+        values = np.atleast_2d(self)
+        index = self._opts['index'][:values.shape[1]]
+        return pd.Series(values[0], index=index, name=self.name)
 
-    @staticmethod
-    def lazy_indexing(df, idx):
-        return df.iloc[:idx]
+    @property
+    def df(self) -> pd.DataFrame:
+        values = np.atleast_2d(np.asarray(self))
+        index = self._opts['index'][:values.shape[1]]
+        df = pd.DataFrame(values.T, index=index, columns=[self.name] * len(values))
+        return df
 
 
 class _Indicator(_Array):
@@ -150,101 +189,114 @@ class _Data:
     as a standard `pd.DataFrame` would, except it's not a DataFrame
     and the returned "series" are _not_ `pd.Series` but `np.ndarray`
     for performance reasons.
+    
+    This implementation supports both single-asset and multi-asset data through
+    a two-level column index structure, where the first level represents tickers
+    and the second level represents OHLCV columns.
     """
-
     def __init__(self, df: pd.DataFrame):
-        self.__df = df
-        self.__i = len(df)
-        self.__pip: Optional[float] = None
-        self.__cache: Dict[str, np.ndarray] = {}
-        self.__arrays: Dict[str, np.ndarray] = {}
-        self.__tickers = list(self.__df.columns.levels[0])
-        self.__ta = _TA(self.__df)
+        self._df = df
+        self._len = len(df)  # Current length
+        self._pip: Optional[float] = None
+        self._cache: Dict[str, _Array] = {}
+        self._arrays: Dict[str, _Array] = {}
+        self._tickers = list(self._df.columns.levels[0])
+        self._ta = _TA(self._df)
         self._update()
 
     def __getitem__(self, item):
-        if item == slice(None, None, None):
-            item = None
-        return self.__get_array(item)
+        return self._get_array(item)
 
     def __getattr__(self, item):
         try:
-            return self.__get_array(item)
-        except KeyError as e:
-            raise AttributeError(f"Column '{item}' not in data") from e
+            return self._get_array(item)
+        except KeyError:
+            raise AttributeError(f"Column '{item}' not in data") from None
 
-    def _set_length(self, i):
-        self.__i = i
-        self.__cache.clear()
+    def _set_length(self, length):
+        self._len = length
+        self._cache.clear()
 
     def _update(self):
-        # cache slices of the data as DataFrame/Series for faster access
+        # Cache slices of the data as DataFrame/Series for faster access
         arrays = (
-            {ticker_col: arr for ticker_col, arr in self.__df.items()}
-            | {col: self.__df.xs(col, axis=1, level=1) for col in self.__df.columns.levels[1]}
-            | {ticker: self.__df[ticker] for ticker in self.__df.columns.levels[0]}
-            | {None: self.__df[self.the_ticker] if len(self.__tickers) == 1 else self.__df}
-            | {'__index': self.__df.index.copy()}
+            {ticker_col: arr for ticker_col, arr in self._df.items()}
+            | {col: self._df.xs(col, axis=1, level=1) for col in self._df.columns.levels[1]}
+            | {ticker: self._df[ticker] for ticker in self._df.columns.levels[0]}
+            | {None: self._df[self.the_ticker] if len(self._tickers) == 1 else self._df}
+            | {'__index': self._df.index.copy()}
         )
         arrays = {key: df.iloc[:, 0] if isinstance(df, pd.DataFrame) and len(
             df.columns) == 1 else df for key, df in arrays.items()}
-        # keep another copy as Numpy array
-        self.__arrays = {key: (df.to_numpy(), df) for key, df in arrays.items()}
+        # Keep another copy as Numpy array
+        self._arrays = {key: (df.to_numpy(), df) for key, df in arrays.items()}
 
     def __repr__(self):
-        i = min(self.__i, len(self.__df)) - 1
-        index = self.__arrays['__index'][0][i]
-        items = ', '.join(f'{k}={v}' for k, v in self.__df.iloc[i].items())
+        i = min(self._len, len(self._df)) - 1
+        index = self._arrays['__index'][0][i]
+        items = ', '.join(f'{k}={v}' for k, v in self._df.iloc[i].items())
         return f'<Data i={i} ({index}) {items}>'
 
     def __len__(self):
-        return self.__i
+        return self._len
 
     @property
     def df(self) -> pd.DataFrame:
-        df_ = self.__df[self.the_ticker] if len(self.tickers) == 1 else self.__df
-        return df_.iloc[:self.__i] if self.__i < len(df_) else df_
+        df_ = self._df[self.the_ticker] if len(self.tickers) == 1 else self._df
+        return df_.iloc[:self._len] if self._len < len(df_) else df_
 
     @property
     def pip(self) -> float:
-        if self.__pip is None:
-            self.__pip = float(10**-np.median([len(s.partition('.')[-1])
-                                               for s in self.__arrays['Close'][0].ravel().astype(str)]))
-        return self.__pip
+        """
+        Returns the smallest price unit of change as determined by the decimal precision
+        of the Close prices.
+        """
+        if self._pip is None:
+            self._pip = float(10**-np.median([len(s.partition('.')[-1])
+                                               for s in self._arrays['Close'][0].ravel().astype(str)]))
+        return self._pip
 
-    def __get_array(self, key) -> _Array:
-        arr = self.__cache.get(key)
+    def _get_array(self, key) -> _Array:
+        """
+        Retrieves array data for the specified key, using cached values when available.
+        """
+        arr = self._cache.get(key)
         if arr is None:
-            array, df = self.__arrays[key]
-            if key == '__index':
-                arr = self.__cache[key] = _Indicator(array=array[:self.__i], df=lambda: df[:self.__i])
-            else:
-                arr = self.__cache[key] = _Indicator(array=array[:self.__i], df=lambda: df.iloc[:self.__i])
+            array, df = self._arrays[key]
+            arr = self._cache[key] = _Array(df.values[:self._len], name=key, index=self.index)
         return arr
 
     @property
     def Open(self) -> _Array:
-        return self.__get_array('Open')
+        """Returns Open price data as an _Array."""
+        return self._get_array('Open')
 
     @property
     def High(self) -> _Array:
-        return self.__get_array('High')
+        """Returns High price data as an _Array."""
+        return self._get_array('High')
 
     @property
     def Low(self) -> _Array:
-        return self.__get_array('Low')
+        """Returns Low price data as an _Array."""
+        return self._get_array('Low')
 
     @property
     def Close(self) -> _Array:
-        return self.__get_array('Close')
+        """Returns Close price data as an _Array."""
+        return self._get_array('Close')
 
     @property
     def Volume(self) -> _Array:
-        return self.__get_array('Volume')
+        """Returns Volume data as an _Array."""
+        return self._get_array('Volume')
 
     @property
     def index(self) -> pd.DatetimeIndex:
-        return self.__get_array('__index').df   # return pd.DatetimeIndex
+        """Returns the DataFrame index."""
+        # Direct access to the array to avoid recursion
+        array, df = self._arrays['__index']
+        return pd.DatetimeIndex(array[:self._len])
 
     # Make pickling in Backtest.optimize() work with our catch-all __getattr__
     def __getstate__(self):
@@ -255,22 +307,30 @@ class _Data:
 
     @property
     def now(self) -> datetime:
+        """Returns the timestamp of the current (last) bar."""
         return self.index[-1]
 
     @property
     def tickers(self) -> List[str]:
-        return self.__tickers
+        """Returns the list of tickers available in the data."""
+        return self._tickers
 
     @property
     def the_ticker(self) -> str:
-        if len(self.__tickers) == 1:
-            return self.__tickers[0]
+        """
+        Returns the single ticker when only one is available.
+        Raises ValueError if multiple tickers exist, requiring explicit specification.
+        """
+        if len(self._tickers) == 1:
+            return self._tickers[0]
         else:
             raise ValueError('Ticker must explicitly specified for multi-asset backtesting')
 
     @property
     def ta(self) -> '_TA':
-        return self.__ta
+        """Returns the technical analysis accessor for the data."""
+        return self._ta
+
 
 
 try:

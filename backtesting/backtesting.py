@@ -693,21 +693,27 @@ class Strategy(ABC):
                 self.sma = self.I(ta.SMA, self.data.Close, self.n_sma)
         """
         if callable(funcval):
+            def _format_name(name: str) -> str:
+                return name.format(*map(_as_str, args),
+                                   **dict(zip(kwargs.keys(), map(_as_str, kwargs.values()))))
+
             if name is None:
-                params = ",".join(
-                    filter(None, map(_as_str, chain(args, kwargs.values())))
-                )
+                params = ','.join(filter(None, map(_as_str, chain(args, kwargs.values()))))
                 func_name = _as_str(funcval)
-                name = f"{func_name}({params})" if params else f"{func_name}"
+                name = (f'{func_name}({params})' if params else f'{func_name}')
+            elif isinstance(name, str):
+                name = _format_name(name)
+            elif try_(lambda: all(isinstance(item, str) for item in name), False):
+                name = [_format_name(item) for item in name]
             else:
-                name = name.format(
-                    *map(_as_str, args),
-                    **dict(zip(kwargs.keys(), map(_as_str, kwargs.values()))),
-                )
+                raise TypeError(f'Unexpected `name=` type {type(name)}; expected `str` or '
+                                '`Sequence[str]`')
+
             try:
                 value = funcval(*args, **kwargs)
             except Exception as e:
-                raise RuntimeError(f'Indicator "{funcval}" error') from e
+                raise RuntimeError(f'Indicator "{name}" error. See traceback above.') from e
+
         else:
             value = funcval
 
@@ -725,37 +731,31 @@ class Strategy(ABC):
                 value = try_(lambda: np.asarray(value, order="C"), None)
             is_arraylike = bool(value is not None and value.shape)
 
-            # Optionally flip the array if the long side of array is not on the 1st dimension
+            # Optionally flip the array if the user returned e.g. `df.values`
             if is_arraylike and np.argmin(value.shape) == 0:
                 value = value.T
 
-            if (
-                not is_arraylike
-                or not 1 <= value.ndim <= 2
-                or value.shape[0] != len(self._data)
-            ):
+            if not is_arraylike or not 1 <= value.ndim <= 2 or value.shape[0] != len(self._data):
                 raise ValueError(
                     'Indicators of numpy.ndarray must have the same '
                     f'length as `data` (data shape: {len(self._data)}; indicator "{name}" '
-                    f'shape: {getattr(value, "shape" , "")}, returned value: {value})'
-                )
+                    f'shape: {getattr(value, "shape" , "")}, returned value: {value})')
             elif value.ndim == 1:
                 value = pd.Series(value, index=self._data.index, name=name)
             else:
                 value = pd.DataFrame(value, index=self._data.index)
 
-        # Use an experimental feature to save DataFrame/Series metadata
-        # https://pandas.pydata.org/pandas-docs/stable/reference/api/pandas.DataFrame.attrs.html
-        value.attrs.update(
-            {
-                "name": name,
-                "plot": plot,
-                "overlay": overlay,
-                "color": color,
-                "scatter": scatter,
-                **kwargs,
-            }
-        )
+        # if plot and overlay is None and np.issubdtype(value.dtype, np.number):
+        #     x = value / self._data.Close
+        #     # By default, overlay if strong majority of indicator values
+        #     # is within 30% of Close
+        #     with np.errstate(invalid='ignore'):
+        #         overlay = ((x < 1.4) & (x > .6)).mean() > .6
+
+        value = _Indicator(value, name=name, plot=plot, overlay=overlay,
+                           color=color, scatter=scatter,
+                           # _Indicator.s Series accessor uses this:
+                           index=self.data.index)
         self._indicators.append(value)
         return value
 
@@ -2208,6 +2208,9 @@ class Backtest:
     If `exclusive_orders` is `True`, each new order auto-closes the previous
     trade/position, making at most a single trade (long or short) in effect
     at each time.
+    If `finalize_trades` is `True`, the trades that are still
+    [active and ongoing] at the end of the backtest will be closed on
+    the last bar and will contribute to the computed backtest statistics.
 
     If `trade_start_date` is not None, orders generated before the date are
     surpressed and ignored in backtesting.
@@ -2242,6 +2245,7 @@ class Backtest:
         trade_on_close=False,
         hedging=False,
         exclusive_orders=False,
+        finalize_trades=False,
         trade_start_date=None,
         lot_size=1,
         fail_fast=True,
@@ -2343,6 +2347,7 @@ class Backtest:
         )
         self._strategy = strategy
         self._results: Optional[pd.Series] = None
+        self._finalize_trades = bool(finalize_trades)
 
         # equal weighed average, as if buy and hold an equal weighed portfolio
         weights = 1 / self._data.xs("Close", axis=1, level=1).iloc[0]
@@ -2419,48 +2424,26 @@ class Backtest:
         data._update()  # Strategy.init might have changed/added to data.df
 
         # Indicators used in Strategy.next()
-        indicator_attrs = {
-            attr: indicator
-            for attr, indicator in strategy.__dict__.items()
-            if any([indicator is item for item in strategy._indicators])
-        }
+        indicator_attrs = _strategy_indicators(strategy)
 
         # Skip first few candles where indicators are still "warming up"
         # +1 to have at least two entries available
         start = 1 + _indicator_warmup_nbars(strategy)
-
-        # Preprocess indicators to numpy array for better performance
-        def deframe(df):
-            return (
-                df.iloc[:, 0]
-                if isinstance(df, pd.DataFrame) and len(df.columns) == 1
-                else df
-            )
-
-        indicator_attrs_np = {
-            attr: deframe(indicator).to_numpy()
-            for attr, indicator in indicator_attrs.items()
-        }
+        # # Preprocess indicators to numpy array for better performance
+        # def deframe(df): return df.iloc[:, 0] if isinstance(df, pd.DataFrame) and len(df.columns) == 1 else df
+        # indicator_attrs_np = {attr: deframe(indicator).to_numpy() for attr, indicator in indicator_attrs}
 
         # Disable "invalid value encountered in ..." warnings. Comparison
         # np.nan >= 3 is not invalid; it's False.
-        with np.errstate(invalid="ignore"):
-            # for i in range(start, len(self._data)):
+        with np.errstate(invalid='ignore'):
+
             for i in _tqdm(range(start, len(self._data)), desc=self.run.__qualname__,
                            unit='bar', mininterval=2, miniters=100):
                 # Prepare data and indicators for `next` call
                 data._set_length(i + 1)
-                for attr, indicator in indicator_attrs_np.items():
-                    setattr(
-                        strategy,
-                        attr,
-                        _Indicator(
-                            array=indicator[: i + 1],
-                            df=partial(
-                                _Indicator.lazy_indexing, indicator_attrs[attr], i + 1
-                            ),
-                        ),
-                    )
+                for attr, indicator in indicator_attrs:
+                    # Slice indicator on the last dimension (case of 2d indicator)
+                    setattr(strategy, attr, indicator[..., :i + 1])
 
                 # Handle orders processing and broker stuff
                 try:
@@ -2474,13 +2457,24 @@ class Backtest:
                 # take note of the orders generated
                 processed_orders.extend(broker.orders)
             else:
-                # take note of the final positions
-                final_positions = {t: p.size for t, p in broker.positions.items()} | {
-                    "Cash": int(broker.margin_available)
-                }
+                if self._finalize_trades is True:
+                    # Close any remaining open trades so they produce some stats
+                    for ticker in broker.trades:
+                        for trade in list(broker.trades[ticker]):
+                            trade.close()
 
-                if start < len(self._data):
-                    broker.finalize()
+                    # HACK: Re-run broker one last time to handle close orders placed in the last
+                    #  strategy iteration. Use the same OHLC values as in the last broker iteration.
+                    if start < len(self._data):
+                        try_(broker.next, exception=_OutOfMoneyError)
+                else:
+                    # take note of the final positions
+                    final_positions = {t: p.size for t, p in broker.positions.items()} | {
+                        "Cash": int(broker.margin_available)
+                    }
+
+                    if start < len(self._data):
+                        broker.finalize()
 
             # Set data back to full length
             # for future `indicator._opts['data'].index` calls to work

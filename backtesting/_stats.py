@@ -1,10 +1,13 @@
+from __future__ import annotations
+
 import warnings
-from typing import TYPE_CHECKING, List, Union
+
+from typing import TYPE_CHECKING, List, Union, cast
 
 import numpy as np
 import pandas as pd
 
-from ._util import _data_period
+from ._util import _data_period, _indicator_warmup_nbars
 
 if TYPE_CHECKING:
     from .backtesting import Order, Strategy, Trade
@@ -38,7 +41,7 @@ def compute_stats(
         trades: Union[List['Trade'], pd.DataFrame],
         equity: pd.DataFrame,
         ohlc_data: pd.DataFrame,
-        strategy_instance: 'Strategy',
+        strategy_instance: 'Strategy' | None,
         risk_free_rate: float = 0,
         positions: dict = None,
         trade_start_bar: int = 0,
@@ -62,16 +65,19 @@ def compute_stats(
     equity_df = pd.concat([equity, pd.DataFrame({'DrawdownPct': dd, 'DrawdownDuration': dd_dur}, index=index)], axis=1)
 
     if isinstance(trades, pd.DataFrame):
-        trades_df = trades
+        trades_df: pd.DataFrame = trades
+        commissions = None  # Not shown
     else:
         # Came straight backtesting.run()
         trades_df = pd.DataFrame({
+            'Size': [t.size for t in trades],
             'EntryBar': [t.entry_bar for t in trades],
             'ExitBar': [t.exit_bar for t in trades],
             'Ticker': [t.ticker for t in trades],
-            'Size': [t.size for t in trades],
             'EntryPrice': [t.entry_price for t in trades],
             'ExitPrice': [t.exit_price for t in trades],
+            'SL': [t.sl for t in trades],
+            'TP': [t.tp for t in trades],
             'PnL': [t.pl for t in trades],
             'ReturnPct': [t.pl_pct for t in trades],
             'EntryTime': [t.entry_time for t in trades],
@@ -79,6 +85,18 @@ def compute_stats(
             'Tag': [t.tag for t in trades],
         })
         trades_df['Duration'] = trades_df['ExitTime'] - trades_df['EntryTime']
+        trades_df['Tag'] = [t.tag for t in trades]
+
+        # Add indicator values
+        if len(trades_df) and strategy_instance:
+            for ind in strategy_instance._indicators:
+                ind = np.atleast_2d(ind)
+                for i, values in enumerate(ind):  # multi-d indicators
+                    suffix = f'_{i}' if len(ind) > 1 else ''
+                    trades_df[f'Entry_{ind.name}{suffix}'] = values[trades_df['EntryBar'].values]
+                    trades_df[f'Exit_{ind.name}{suffix}'] = values[trades_df['ExitBar'].values]
+
+        commissions = sum(t._commissions for t in trades)
     del trades
 
     pl = trades_df['PnL']
@@ -104,53 +122,60 @@ def compute_stats(
     s.loc['Equity Final [$]'] = equity['Equity'].iloc[-1]
     s.loc['Equity Peak [$]'] = equity['Equity'].max()
     s.loc['Return [%]'] = (equity['Equity'].iloc[-1] - equity['Equity'].iloc[0]) / equity['Equity'].iloc[0] * 100
+    if commissions:
+        s.loc['Commissions [$]'] = commissions
+    s.loc['Return [%]'] = (equity['Equity'][-1] - equity['Equity'][0]) / equity['Equity'][0] * 100
+    first_trading_bar = _indicator_warmup_nbars(strategy_instance)
     c = ohlc_data.Close.values
-    s.loc['Buy & Hold Return [%]'] = (c[-1] - c[trade_start_bar]) / c[trade_start_bar] * 100  # long-only return
+    s.loc['Buy & Hold Return [%]'] = (c[-1] - c[first_trading_bar]) / c[first_trading_bar] * 100  # long-only return
 
-    gmean_period_return: float = 0
-    period_returns = np.array(np.nan)
-    annual_trading_periods = np.nan
-    if isinstance(index, pd.DatetimeIndex):
-        period = equity.index.to_series().diff().mean().days
-        if period <= 1:
-            period_returns = equity_df['Equity'].iloc[trade_start_bar:].resample('D').last().dropna().pct_change()
-            gmean_period_return = geometric_mean(period_returns)
-            annual_trading_periods = float(
-                365 if index.dayofweek.to_series().between(5, 6).mean() > 2/7 * .6 else 252)
-        elif period >= 28 and period <= 31:
-            period_returns = equity_df['Equity'].iloc[trade_start_bar:].pct_change()
-            gmean_period_return = geometric_mean(period_returns)
-            annual_trading_periods = 12
-        elif period >= 365 and period <= 366:
-            period_returns = equity_df['Equity'].iloc[trade_start_bar:].pct_change()
-            gmean_period_return = geometric_mean(period_returns)
-            annual_trading_periods = 1
-        else:
-            warnings.warn(f'Unsupported data period from index: {period} days.')
+    gmean_day_return: float = 0
+    day_returns = np.array(np.nan)
+    annual_trading_days = np.nan
+    is_datetime_index = isinstance(index, pd.DatetimeIndex)
+    if is_datetime_index:
+        freq_days = cast(pd.Timedelta, _data_period(index)).days
+        have_weekends = index.dayofweek.to_series().between(5, 6).mean() > 2 / 7 * .6
+        annual_trading_days = (
+            52 if freq_days == 7 else
+            12 if freq_days == 31 else
+            1 if freq_days == 365 else
+            (365 if have_weekends else 252))
+        freq = {7: 'W', 31: 'ME', 365: 'YE'}.get(freq_days, 'D')
+        day_returns = equity_df['Equity'].resample(freq).last().dropna().pct_change()
+        gmean_day_return = geometric_mean(day_returns)
 
     # Annualized return and risk metrics are computed based on the (mostly correct)
     # assumption that the returns are compounded. See: https://dx.doi.org/10.2139/ssrn.3054517
     # Our annualized return matches `empyrical.annual_return(day_returns)` whereas
     # our risk doesn't; they use the simpler approach below.
-    annualized_return = (1 + gmean_period_return)**annual_trading_periods - 1
+    annualized_return = (1 + gmean_day_return)**annual_trading_days - 1
     s.loc['Return (Ann.) [%]'] = annualized_return * 100
-    s.loc['Volatility (Ann.) [%]'] = np.sqrt((period_returns.var(ddof=int(bool(period_returns.shape))) + (1 + gmean_period_return)**2)**annual_trading_periods - (1 + gmean_period_return)**(2*annual_trading_periods)) * 100  # noqa: E501
+    s.loc['Volatility (Ann.) [%]'] = np.sqrt((day_returns.var(ddof=int(bool(day_returns.shape))) + (1 + gmean_day_return)**2)**annual_trading_days - (1 + gmean_day_return)**(2 * annual_trading_days)) * 100  # noqa: E501
     # s.loc['Return (Ann.) [%]'] = gmean_day_return * annual_trading_days * 100
     # s.loc['Risk (Ann.) [%]'] = day_returns.std(ddof=1) * np.sqrt(annual_trading_days) * 100
+    if is_datetime_index:
+        time_in_years = (s.loc['Duration'].days + s.loc['Duration'].seconds / 86400) / annual_trading_days
+        s.loc['CAGR [%]'] = ((s.loc['Equity Final [$]'] / equity['Equity'][0])**(1 / time_in_years) - 1) * 100 if time_in_years else np.nan  # noqa: E501
 
     # Our Sharpe mismatches `empyrical.sharpe_ratio()` because they use arithmetic mean return
     # and simple standard deviation
-    s.loc['Sharpe Ratio'] = (s.loc['Return (Ann.) [%]'] - risk_free_rate) / (s.loc['Volatility (Ann.) [%]'] or np.nan)  # noqa: E501
-    with warnings.catch_warnings():
-        # wrap to catch RuntimeWarning: divide by zero encountered in scalar divide
-        warnings.filterwarnings('error')
-        try:
+    s.loc['Sharpe Ratio'] = (s.loc['Return (Ann.) [%]'] - risk_free_rate * 100) / (s.loc['Volatility (Ann.) [%]'] or np.nan)  # noqa: E501
             # Our Sortino mismatches `empyrical.sortino_ratio()` because they use arithmetic mean return
-            s.loc['Sortino Ratio'] = (annualized_return - risk_free_rate) / (np.sqrt(np.mean(period_returns.clip(-np.inf, 0)**2)) * np.sqrt(annual_trading_periods))  # noqa: E501
-        except Warning:
-            s.loc['Sortino Ratio'] = np.nan
+    with np.errstate(divide='ignore'):
+        s.loc['Sortino Ratio'] = (annualized_return - risk_free_rate) / (np.sqrt(np.mean(day_returns.clip(-np.inf, 0)**2)) * np.sqrt(annual_trading_days))  # noqa: E501
     max_dd = -np.nan_to_num(dd.max())
     s.loc['Calmar Ratio'] = annualized_return / (-max_dd or np.nan)
+    equity_log_returns = np.log(equity['Equity'].values[1:] / equity['Equity'].values[:-1])
+    market_log_returns = np.log(c[1:] / c[:-1])
+    beta = np.nan
+    if len(equity_log_returns) > 1 and len(market_log_returns) > 1:
+        # len == 0 on dummy call `stats_keys = compute_stats(...)` pre optimization
+        cov_matrix = np.cov(equity_log_returns, market_log_returns)
+        beta = cov_matrix[0, 1] / cov_matrix[1, 1]
+    # Jensen CAPM Alpha: can be strongly positive when beta is negative and B&H Return is large
+    s.loc['Alpha [%]'] = s.loc['Return [%]'] - risk_free_rate * 100 - beta * (s.loc['Buy & Hold Return [%]'] - risk_free_rate * 100)  # noqa: E501
+    s.loc['Beta'] = beta
     s.loc['Max. Drawdown [%]'] = max_dd * 100
     s.loc['Avg. Drawdown [%]'] = -dd_peaks.mean() * 100
     s.loc['Max. Drawdown Duration'] = _round_timedelta(dd_dur.max())
@@ -182,6 +207,11 @@ def compute_stats(
 
 class _Stats(pd.Series):
     def __repr__(self):
-        # Prevent expansion due to Equity and _trades dfs
-        with pd.option_context('max_colwidth', 20):
+        with pd.option_context(
+            'display.max_colwidth', 20,  # Prevent expansion due to _equity and _trades dfs
+            'display.max_rows', len(self),  # Reveal self whole
+            'display.precision', 5,  # Enough for my eyes at least
+            # 'format.na_rep', '--',  # TODO: Enable once it works
+        ):
             return super().__repr__()
+

@@ -33,7 +33,7 @@ from backtesting.lib import (
     random_ohlc_data,
     resample_apply,
 )
-from backtesting.test import BTCUSD, EURUSD, GOOG, SMA
+from backtesting.test import BTCUSD, EURUSD, GOOG, SMA, SPY
 
 SHORT_DATA = GOOG.iloc[:20]  # Short data for fast tests with no indicator lag
 
@@ -62,8 +62,8 @@ class SmaCross(Strategy):
     slow = 30
 
     def init(self):
-        self.sma1 = self.I(SMA, self.data.Close.df, self.fast)
-        self.sma2 = self.I(SMA, self.data.Close.df, self.slow)
+        self.sma1 = self.I(SMA, self.data.Close, self.fast)
+        self.sma2 = self.I(SMA, self.data.Closef, self.slow)
 
     def next(self):
         if crossover(self.sma1, self.sma2):
@@ -358,11 +358,12 @@ class TestBacktest(TestCase):
             except TypeError:
                 return a == b
 
-        diff = {
-            key: print(key) or value  # noqa: T201
-            for key, value in stats.filter(regex="^[^_]").items()
-            if not almost_equal(value, expected[key])
-        }
+        diff = {}
+        for key, value in stats.filter(regex="^[^_]").items():
+            if not almost_equal(value, expected[key]):
+                print(key)  # This prints the key
+                diff[key] = value  # This assigns the value to the key in the diff dictionary
+
         self.assertDictEqual(diff, {})
 
         self.assertSequenceEqual(
@@ -1261,6 +1262,47 @@ class TestRegressions(TestCase):
         data.index = data.index.tz_localize("Asia/Kolkata")
         res = Backtest(data, SmaCross).optimize(fast=range(2, 3), slow=range(4, 5))
         self.assertGreater(res["# Trades"], 0)
+
+
+# Create a multi-asset dataframe from the imported GOOG and SPY data
+MULTI_ASSET_DATA = pd.DataFrame({
+    ("GOOG", "Open"): GOOG["Open"],
+    ("GOOG", "High"): GOOG["High"],
+    ("GOOG", "Low"): GOOG["Low"],
+    ("GOOG", "Close"): GOOG["Close"],
+    ("GOOG", "Volume"): GOOG["Volume"],
+    ("SPY", "Open"): SPY["Open"],
+    ("SPY", "High"): SPY["High"],
+    ("SPY", "Low"): SPY["Low"],
+    ("SPY", "Close"): SPY["Close"],
+    ("SPY", "Volume"): SPY["Volume"]
+})
+
+
+def calculate_ema(data, period, smoothing=2):
+    """
+    Calculate Exponential Moving Average
+    
+    Parameters:
+    data (array-like): Price data series
+    period (int): EMA period (e.g., 10, 20, 50)
+    smoothing (int): Smoothing factor, typically 2 for standard EMA
+    
+    Returns:
+    array-like: EMA values
+    """
+    ema = [0] * len(data)
+    # Start with SMA for the initial EMA value
+    ema[period-1] = sum(data[:period]) / period
+    
+    # Calculate multiplier
+    multiplier = smoothing / (period + 1)
+    
+    # Calculate EMA for remaining data points
+    for i in range(period, len(data)):
+        ema[i] = (data[i] - ema[i-1]) * multiplier + ema[i-1]
+    
+    return ema
 
 
 class TestBacktestMulti(object):
