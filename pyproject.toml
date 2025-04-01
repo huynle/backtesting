@@ -62,3 +62,8 @@ lxml-html-clean = "^0.1"
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
+
+
+[tool.ruff]
+# Exclude line length checks
+ignore = ["E501"]
