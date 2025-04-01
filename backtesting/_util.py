@@ -101,26 +101,10 @@ def _strategy_indicators(strategy):
 def _indicator_warmup_nbars(strategy):
     if strategy is None:
         return 0
-    nbars = 0  # Default value if no indicators meet the criteria
-
-    for _, indicator in _strategy_indicators(strategy):
-        # Skip scatter indicators
-        if indicator._opts['scatter']:
-            continue
-        
-        # Convert indicator to float
-        float_indicator = indicator.astype(float)
-        
-        # Find the first non-NaN index for each row
-        first_non_nan_indices = np.isnan(float_indicator).argmin(axis=-1)
-        
-        # Get the maximum of these indices
-        max_index = first_non_nan_indices.max()
-        
-        # Update nbars if this max_index is larger
-        if max_index > nbars:
-            nbars = max_index
-        return nbars
+    nbars = max((np.isnan(indicator.astype(float)).argmin(axis=-1).max()
+                 for _, indicator in _strategy_indicators(strategy)
+                 if not indicator._opts['scatter']), default=0)
+    return nbars
 
 
 class _Array(np.ndarray):
