@@ -62,8 +62,8 @@ class SmaCross(Strategy):
     slow = 30
 
     def init(self):
-        self.sma1 = self.I(SMA, self.data.Close, self.fast)
-        self.sma2 = self.I(SMA, self.data.Closef, self.slow)
+        self.sma1 = self.I(SMA, self.data.Close.s, self.fast)
+        self.sma2 = self.I(SMA, self.data.Close.s, self.slow)
 
     def next(self):
         if crossover(self.sma1, self.sma2):
