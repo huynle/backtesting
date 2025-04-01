@@ -2466,10 +2466,12 @@ class Backtest:
                         for trade in list(broker.trades[ticker]):
                             trade.close()
 
+
                     # HACK: Re-run broker one last time to handle close orders placed in the last
                     #  strategy iteration. Use the same OHLC values as in the last broker iteration.
                     if start < len(self._data):
-                        try_(broker.finalize, exception=_OutOfMoneyError)
+                        try_(broker.next, exception=_OutOfMoneyError)
+                        broker.finalize()
 
                     # take note of the final positions
                     final_positions = {t: p.size for t, p in broker.positions.items()} | {
