@@ -409,12 +409,12 @@ class TestBacktest(TestCase):
                 if not self._done:
                     self.buy()
                     self._done = True
-                if self.position:
-                    self.position.close()
+                if self.position():
+                    self.position().close()
 
         class SinglePosition(_S):
             def next(self):
-                if not self.position:
+                if not self.position():
                     self.buy()
 
         class NoTrade(_S):
@@ -459,14 +459,14 @@ class TestBacktest(TestCase):
     def test_position_close_portion(self):
         class SmaCross(Strategy):
             def init(self):
-                self.sma1 = self.I(SMA, self.data.Close, 10)
-                self.sma2 = self.I(SMA, self.data.Close, 20)
+                self.sma1 = self.I(SMA, self.data.Close.s, 10)
+                self.sma2 = self.I(SMA, self.data.Close.s, 20)
 
             def next(self):
-                if not self.position and crossover(self.sma1, self.sma2):
+                if not self.position() and crossover(self.sma1, self.sma2):
                     self.buy(size=10)
-                if self.position and crossover(self.sma2, self.sma1):
-                    self.position.close(portion=0.5)
+                if self.position() and crossover(self.sma2, self.sma1):
+                    self.position().close(portion=0.5)
 
         bt = Backtest(GOOG, SmaCross, spread=0.002)
         bt.run()
@@ -474,10 +474,10 @@ class TestBacktest(TestCase):
     def test_close_orders_from_last_strategy_iteration(self):
         class S(_S):
             def next(self):
-                if not self.position:
+                if not self.position():
                     self.buy()
                 elif len(self.data) == len(SHORT_DATA):
-                    self.position.close()
+                    self.position().close()
 
         self.assertTrue(
             Backtest(SHORT_DATA, S, finalize_trades=False).run()._trades.empty
@@ -510,21 +510,21 @@ class TestStrategy(TestCase):
         def coroutine(self):
             yield self.buy()
 
-            assert self.position
-            assert self.position.is_long
-            assert not self.position.is_short
-            assert self.position.size > 0
-            assert self.position.pl
-            assert self.position.pl_pct
+            assert self.position()
+            assert self.position().is_long
+            assert not self.position().is_short
+            assert self.position().size > 0
+            assert self.position().pl
+            assert self.position().pl_pct
 
-            yield self.position.close()
+            yield self.position().close()
 
-            assert not self.position
-            assert not self.position.is_long
-            assert not self.position.is_short
-            assert not self.position.size
-            assert not self.position.pl
-            assert not self.position.pl_pct
+            assert not self.position()
+            assert not self.position().is_long
+            assert not self.position().is_short
+            assert not self.position().size
+            assert not self.position().pl
+            assert not self.position().pl_pct
 
         self._Backtest(coroutine).run()
 
@@ -567,7 +567,7 @@ class TestStrategy(TestCase):
             self.buy(size=1)
             self.buy(size=1)
             yield
-            if self.position:
+            if self.position():
                 self.sell(size=1)
 
         self._Backtest(coroutine).run()
@@ -597,7 +597,7 @@ class TestStrategy(TestCase):
             yield self.sell(size=1)
 
             yield self.buy(tag=2)
-            yield self.position.close()
+            yield self.position().close()
 
         stats = self._Backtest(coroutine).run()
         self.assertEqual(list(stats._trades.Tag), [1, 1, 2])
@@ -801,7 +801,7 @@ class TestPlot(TestCase):
                 if date == pd.Timestamp("Thu 19 Oct 2006"):
                     self.buy(stop=484, limit=466, size=100)
                 elif date == pd.Timestamp("Thu 30 Oct 2007"):
-                    self.position.close()
+                    self.position().close()
                 elif date == pd.Timestamp("Tue 11 Nov 2008"):
                     self.sell(
                         stop=self.data.Low,
@@ -1028,7 +1028,7 @@ class TestLib(TestCase):
 
             def next(self):
                 super().next()
-                if not self.position and self.data.Close > self.sma:
+                if not self.position() and self.data.Close > self.sma:
                     self.buy()
 
         stats = Backtest(GOOG, S).run()
@@ -1177,8 +1177,8 @@ class TestRegressions(TestCase):
         class S(_S):
             def next(self):
                 self.buy(sl=1, tp=1e3)
-                if self.position:
-                    self.position.close()
+                if self.position():
+                    self.position().close()
                     for order in self.orders:
                         order.cancel()
 

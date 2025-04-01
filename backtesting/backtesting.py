@@ -2469,15 +2469,12 @@ class Backtest:
                     # HACK: Re-run broker one last time to handle close orders placed in the last
                     #  strategy iteration. Use the same OHLC values as in the last broker iteration.
                     if start < len(self._data):
-                        try_(broker.next, exception=_OutOfMoneyError)
-                else:
+                        try_(broker.finalize, exception=_OutOfMoneyError)
+
                     # take note of the final positions
                     final_positions = {t: p.size for t, p in broker.positions.items()} | {
                         "Cash": int(broker.margin_available)
                     }
-
-                    if start < len(self._data):
-                        broker.finalize()
 
             # Set data back to full length
             # for future `indicator._opts['data'].index` calls to work

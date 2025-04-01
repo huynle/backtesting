@@ -97,7 +97,7 @@ class System(Strategy):
         
         # If we don't already have a position, and
         # if all conditions are satisfied, enter long.
-        if (not self.position and
+        if (not self.position() and
             self.daily_rsi[-1] > self.level and
             self.weekly_rsi[-1] > self.level and
             self.weekly_rsi[-1] > self.daily_rsi[-1] and
@@ -111,7 +111,7 @@ class System(Strategy):
         # If the price closes 2% or more below 10-day MA
         # close the position, if any.
         elif price < .98 * self.ma10[-1]:
-            self.position.close()
+            self.position().close()
 # -
 
 # Let's see how our strategy fares replayed on nine years of Google stock data.

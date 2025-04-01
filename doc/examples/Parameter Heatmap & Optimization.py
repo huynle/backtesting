@@ -53,7 +53,7 @@ class Sma4Cross(Strategy):
         
     def next(self):
         
-        if not self.position:
+        if not self.position():
             
             # On upwards trend, if price closes above
             # "entry" MA, go long
@@ -75,13 +75,13 @@ class Sma4Cross(Strategy):
         # closes back below (above) "exit" MA, close the position
         
         else:
-            if (self.position.is_long and
+            if (self.position().is_long and
                 crossover(self.sma_exit, self.data.Close)
                 or
-                self.position.is_short and
+                self.position().is_short and
                 crossover(self.data.Close, self.sma_exit)):
                 
-                self.position.close()
+                self.position().close()
 
 
 # -
