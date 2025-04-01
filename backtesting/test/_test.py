@@ -367,7 +367,7 @@ class TestBacktest(TestCase):
 
         self.assertSequenceEqual(
             sorted(stats["_equity_curve"].columns),
-            sorted(["Equity", "DrawdownPct", "DrawdownDuration"]),
+            sorted(["Equity", "DrawdownPct", "DrawdownDuration", "Cash", "Asset"]),
         )
 
         self.assertEqual(len(stats["_trades"]), 66)
@@ -394,6 +394,7 @@ class TestBacktest(TestCase):
                     "ExitTime",
                     "Duration",
                     "Tag",
+                    "Ticker",
                     *indicator_columns,
                 ]
             ),
