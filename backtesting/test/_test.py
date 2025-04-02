@@ -532,10 +532,10 @@ class TestStrategy(TestCase):
         def coroutine(self):
             yield self.buy(size=2)
 
-            assert len(self.trades) == 1
+            assert len(self.trades()) == 1
             yield self.sell(size=1)
 
-            assert len(self.trades) == 2
+            assert len(self.trades()) == 2
 
         self._Backtest(coroutine, hedging=True).run()
 
@@ -543,11 +543,11 @@ class TestStrategy(TestCase):
         def coroutine(self):
             yield self.buy(size=2)
 
-            assert len(self.trades) == 1
+            assert len(self.trades()) == 1
             yield self.sell(size=3)
 
-            assert len(self.trades) == 1
-            assert self.trades[0].size == -3
+            assert len(self.trades()) == 1
+            assert self.trades()[0].size == -3
 
         self._Backtest(coroutine, exclusive_orders=True).run()
 
@@ -555,9 +555,9 @@ class TestStrategy(TestCase):
         def coroutine(self):
             yield self.buy()
 
-            assert self.trades
-            self.trades[-1].close(1)
-            self.trades[-1].close(0.1)
+            assert self.trades()
+            self.trades()[-1].close(1)
+            self.trades()[-1].close(0.1)
             yield
 
         self._Backtest(coroutine).run()
