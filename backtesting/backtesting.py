@@ -2959,7 +2959,7 @@ class Backtest:
         return plot(
             results=results,
             data=self._data,
-            baseline=self._ohlc_ref_data,
+            df=self._ohlc_ref_data,
             indicators=indicators,
             filename=filename,
             plot_width=plot_width,
