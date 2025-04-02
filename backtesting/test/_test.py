@@ -784,7 +784,7 @@ class TestPlot(TestCase):
                 def ok(x):
                     return x
 
-                self.a = self.I(SMA, self.data.Open, 5, overlay=False, name="ok")
+                self.a = self.I(SMA, self.data.Open.s, 5, overlay=False, name="ok")
                 self.b = self.I(ok, np.random.random(len(self.data.Open)))
 
         bt = Backtest(GOOG, Strategy)
@@ -856,7 +856,7 @@ class TestPlot(TestCase):
         class S(Strategy):
             def init(self):
                 def _SMA():
-                    return SMA(self.data.Close, 5), SMA(self.data.Close, 10)
+                    return SMA(self.data.Close.s, 5), SMA(self.data.Close.s, 10)
 
                 test_self.assertRaises(TypeError, self.I, _SMA, name=42)
                 test_self.assertRaises(ValueError, self.I, _SMA, name=("SMA One",))
@@ -890,8 +890,8 @@ class TestPlot(TestCase):
     def test_indicator_color(self):
         class S(Strategy):
             def init(self):
-                a = self.I(SMA, self.data.Close, 5, overlay=True, color="red")
-                b = self.I(SMA, self.data.Close, 10, overlay=False, color="blue")
+                a = self.I(SMA, self.data.Close.s, 5, overlay=True, color="red")
+                b = self.I(SMA, self.data.Close.s, 10, overlay=False, color="blue")
                 self.I(lambda: (a, b), overlay=False, color=("green", "orange"))
 
             def next(self):
@@ -912,8 +912,8 @@ class TestPlot(TestCase):
     def test_indicator_scatter(self):
         class S(Strategy):
             def init(self):
-                self.I(SMA, self.data.Close, 5, overlay=True, scatter=True)
-                self.I(SMA, self.data.Close, 10, overlay=False, scatter=True)
+                self.I(SMA, self.data.Close.s, 5, overlay=True, scatter=True)
+                self.I(SMA, self.data.Close.s, 10, overlay=False, scatter=True)
 
             def next(self):
                 pass
@@ -1014,7 +1014,7 @@ class TestLib(TestCase):
                 sma = self.data.Close.s.rolling(10).mean()
                 self.set_signal(self.data.Close > sma, self.data.Close < sma)
 
-        stats = Backtest(GOOG, S).run()
+        stats = Backtest(GOOG, S, fail_fast=False).run()
         self.assertIn(stats["# Trades"], (1179, 1180))  # varies on different archs?
 
     def test_TrailingStrategy(self):
@@ -1187,8 +1187,8 @@ class TestRegressions(TestCase):
     def test_trade_on_close_closes_trades_on_close(self):
         def coro(strat):
             yield strat.buy(size=1, sl=90) and strat.buy(size=1, sl=80)
-            assert len(strat.trades) == 2
-            yield strat.trades[0].close()
+            assert len(strat.trades()) == 2
+            yield strat.trades()[0].close()
             yield
 
         arr = np.r_[100, 101, 102, 50, 51]
@@ -1239,7 +1239,7 @@ class TestRegressions(TestCase):
                 if i == 4:
                     self.buy()
                 if i == 5:
-                    t = self.trades[0]
+                    t = self.trades()[0]
                     t.sl = 105
                     t.tp = 107.9
 

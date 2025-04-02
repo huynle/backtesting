@@ -124,7 +124,7 @@ def compute_stats(
     s.loc['Return [%]'] = (equity['Equity'].iloc[-1] - equity['Equity'].iloc[0]) / equity['Equity'].iloc[0] * 100
     if commissions:
         s.loc['Commissions [$]'] = commissions
-    s.loc['Return [%]'] = (equity['Equity'][-1] - equity['Equity'][0]) / equity['Equity'][0] * 100
+    s.loc['Return [%]'] = (equity['Equity'].iloc[-1] - equity['Equity'].iloc[0]) / equity['Equity'].iloc[0] * 100
     first_trading_bar = _indicator_warmup_nbars(strategy_instance)
     c = ohlc_data.Close.values
     s.loc['Buy & Hold Return [%]'] = (c[-1] - c[first_trading_bar]) / c[first_trading_bar] * 100  # long-only return

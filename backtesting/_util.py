@@ -277,10 +277,8 @@ class _Data:
 
     @property
     def index(self) -> pd.DatetimeIndex:
-        """Returns the DataFrame index."""
-        # Direct access to the array to avoid recursion
-        array, df = self._arrays['__index']
-        return pd.DatetimeIndex(array[:self._len])
+        # return self.__get_array('__index').df   # return pd.DatetimeIndex
+        return self._df.index   # return pd.DatetimeIndex
 
     # Make pickling in Backtest.optimize() work with our catch-all __getattr__
     def __getstate__(self):
