@@ -151,11 +151,20 @@ def _maybe_resample_data(
 
     baseline = baseline.resample(freq, label="right").agg(OHLCV_AGG).dropna()
 
-    indicators = [
-        i.resample(freq, label="right").mean().dropna().reindex(baseline.index)
-        for i in indicators
-    ]
-    assert not indicators or indicators[0].index.equals(baseline.index)
+    def try_mean_first(indicator):
+        nonlocal freq
+        resampled = indicator.df.fillna(np.nan).resample(freq, label='right')
+        try:
+            return resampled.mean()
+        except Exception:
+            return resampled.first()
+
+    indicators = [_Indicator(try_mean_first(i).dropna().reindex(data.index).values.T,
+                             **dict(i._opts, name=i.name,
+                                    # Replace saved index with the resampled one
+                                    index=data.index))
+                  for i in indicators]
+    assert not indicators or indicators[0]._opts['index'].equals(data.index)
 
     column_agg = {
         ticker: _EQUITY_AGG[ticker] if ticker in _EQUITY_AGG else "last"
@@ -208,7 +217,7 @@ def plot(
     *,
     results: pd.Series,
     data: pd.DataFrame,
-    baseline: pd.DataFrame,
+    df: pd.DataFrame,
     indicators: List[Union[pd.DataFrame, pd.Series]],
     filename="",
     plot_width=None,
@@ -242,40 +251,41 @@ def plot(
     COLORS = [BEAR_COLOR, BULL_COLOR]
     BAR_WIDTH = 0.8
 
-    assert baseline.index.equals(results["_equity_curve"].index)
+    assert df.index.equals(results["_equity_curve"].index)
     equity_data = results["_equity_curve"].copy(deep=False)
     trades = results["_trades"]
 
-    plot_volume = plot_volume and not baseline.Volume.isnull().all()
+    plot_volume = plot_volume and not df.Volume.isnull().all()
     plot_equity = plot_equity and not trades.empty
     plot_return = plot_return and not trades.empty
     plot_pl = plot_pl and not trades.empty
-    is_datetime_index = isinstance(baseline.index, pd.DatetimeIndex)
+    plot_trades = plot_trades and not trades.empty
+    is_datetime_index = isinstance(df.index, pd.DatetimeIndex)
 
     from .lib import OHLCV_AGG
-
     # ohlc df may contain many columns. We're only interested in, and pass on to Bokeh, these
-    if "Volume" not in baseline:
-        baseline["Volume"] = 0.0
-    baseline = baseline[list(OHLCV_AGG.keys())].copy(deep=False)
+    if "Volume" not in df:
+        df["Volume"] = 0.0
+
+    df = df[list(OHLCV_AGG.keys())].copy(deep=False)
 
     # Buy-and-hold cumulative returns
-    bnh_perf = baseline["Close"] / baseline["Close"].iloc[results["_trade_start_bar"]]
+    bnh_perf = df["Close"] / df["Close"].iloc[results["_trade_start_bar"]]
     bnh_perf.iloc[: results["_trade_start_bar"]] = 1.0
 
     # Limit data to max_candles
     if is_datetime_index:
-        data, baseline, indicators, equity_data, trades, bnh_perf = (
+        data, df, indicators, equity_data, trades, bnh_perf = (
             _maybe_resample_data(
-                resample, data, baseline, indicators, equity_data, trades, bnh_perf
+                resample, data, df, indicators, equity_data, trades, bnh_perf
             )
         )
 
-    baseline.index.name = None  # Provides source name @index
-    baseline["datetime"] = baseline.index  # Save original, maybe datetime index
-    baseline = baseline.reset_index(drop=True)
+    df.index.name = None  # Provides source name @index
+    df["datetime"] = df.index  # Save original, maybe datetime index
+    df = df.reset_index(drop=True)
     equity_data = equity_data.reset_index(drop=True)
-    index = baseline.index
+    index = df.index
 
     new_bokeh_figure = partial(
         _figure,
@@ -304,8 +314,8 @@ def plot(
     fig_ohlc = new_bokeh_figure(**_kwargs)
     figs_above_ohlc, figs_below_ohlc = [], []
 
-    source = ColumnDataSource(baseline)
-    source.add((baseline.Close >= baseline.Open).values.astype(np.uint8).astype(str), "inc")
+    source = ColumnDataSource(df)
+    source.add((df.Close >= df.Open).values.astype(np.uint8).astype(str), "inc")
     source.add(bnh_perf, "bnh_perf")
 
     trade_source_data = dict(
@@ -340,7 +350,7 @@ return this.labels[index] || "";
         )
 
     NBSP = "\N{NBSP}" * 4  # noqa: E999
-    ohlc_extreme_values = baseline[["High", "Low"]].copy(deep=False)
+    ohlc_extreme_values = df[["High", "Low"]].copy(deep=False)
     ohlc_tooltips = [
         ("x, y", NBSP.join(("$index", "$y{0,0.0[0000]}"))),
         (
@@ -530,10 +540,10 @@ return this.labels[index] || "";
                 color="red",
                 size=8,
             )
-        if dd_start < len(baseline) and int(round(dd_end)) < len(baseline):
+        if dd_start < len(df) and int(round(dd_end)) < len(df):
             dd_timedelta_label = (
-                baseline["datetime"].iloc[int(round(dd_end))]
-                - baseline["datetime"].iloc[dd_start]
+                df["datetime"].iloc[int(round(dd_end))]
+                - df["datetime"].iloc[dd_start]
             )
             fig.line(
                 [dd_start, dd_end],
@@ -556,7 +566,7 @@ return this.labels[index] || "";
             equity_sum = equity.sum(axis=1)
             equity = equity.divide(equity_sum, axis=0).fillna(0)
         equity_source = ColumnDataSource(equity)
-        equity_source.add(baseline.index, "index")
+        equity_source.add(df.index, "index")
 
         yaxis_label = "Allocation"
         fig = new_indicator_figure(
@@ -566,7 +576,7 @@ return this.labels[index] || "";
         if relative:
             tooltip_format = [f"@{ticker}{{+0,0.[000]%}}" for ticker in names]
             tick_format = "0,0.[00]%"
-            equity_source.add(pd.Series(1, index=baseline.index), "equity")
+            equity_source.add(pd.Series(1, index=df.index), "equity")
         else:
             tooltip_format = [f"@{ticker}{{$ 0,0}}" for ticker in names]
             tick_format = "$ 0.0 a"
@@ -684,14 +694,14 @@ return this.labels[index] || "";
 
     def _plot_superimposed_ohlc():
         """Superimposed, downsampled vbars"""
-        if not isinstance(baseline["datetime"], pd.DatetimeIndex):
+        if not isinstance(df["datetime"], pd.DatetimeIndex):
              warnings.warn(
                 "Superimposing requires a datetime index. Skipping.",
                 stacklevel=4,
             )
              return
 
-        time_resolution = pd.DatetimeIndex(baseline["datetime"]).resolution
+        time_resolution = pd.DatetimeIndex(df["datetime"]).resolution
         resample_rule = (
             superimpose
             if isinstance(superimpose, str)
@@ -708,14 +718,14 @@ return this.labels[index] || "";
             return
 
         df2 = (
-            baseline.assign(_width=1)
+            df.assign(_width=1)
             .set_index("datetime")
             .resample(resample_rule, label="left")
             .agg(dict(OHLCV_AGG, _width="count"))
         )
 
         # Check if resampling was downsampling; error on upsampling
-        orig_freq = _data_period(baseline["datetime"])
+        orig_freq = _data_period(df["datetime"])
         resample_freq = _data_period(df2.index)
         if resample_freq < orig_freq:
             raise ValueError("Invalid value for `superimpose`: Upsampling not supported.")
@@ -838,127 +848,80 @@ return this.labels[index] || "";
         indicator_figs = []
 
         for i, value in enumerate(indicators):
-            if value is None or value.empty or not value.attrs.get("plot") or _too_many_dims(value):
+            value = np.atleast_2d(value)
+
+            # Use .get()! A user might have assigned a Strategy.data-evolved
+            # _Array without Strategy.I()
+            if not value._opts.get('plot') or _too_many_dims(value):
                 continue
 
-            is_overlay = value.attrs["overlay"]
-            is_scatter = value.attrs["scatter"]
-            value_name = value.attrs.get("name") or getattr(value, 'name', '')
-
-            if isinstance(value, pd.DataFrame):
-                legend_label = (
-                    [LegendStr(f'{value_name} {col}') for col in value.columns]
-                    if value_name
-                    else [LegendStr(str(col)) for col in value.columns]
-                )
-                series_lst = [value[col] for col in value.columns]
-            else:
-                legend_label = [LegendStr(value_name)]
-                series_lst = [value]
-
+            is_overlay = value._opts['overlay']
+            is_scatter = value._opts['scatter']
             if is_overlay:
                 fig = fig_ohlc
             else:
-                fig = new_indicator_figure(height=60 + 20 * len(series_lst))
+                fig = new_indicator_figure()
                 indicator_figs.append(fig)
-
             tooltips = []
-            colors = value.attrs["color"]
-            colors = (
-                colors
-                and cycle(_as_list(colors))
-                or (cycle([next(ohlc_colors)]) if is_overlay else colorgen())
-            )
-            renderers_for_fig = []
+            colors = value._opts['color']
+            colors = colors and cycle(_as_list(colors)) or (
+                cycle([next(ohlc_colors)]) if is_overlay else colorgen())
 
-            for j, arr in enumerate(series_lst):
+            if isinstance(value.name, str):
+                tooltip_label = value.name
+                legend_labels = [LegendStr(value.name)] * len(value)
+            else:
+                tooltip_label = ", ".join(value.name)
+                legend_labels = [LegendStr(item) for item in value.name]
+
+            for j, arr in enumerate(value):
                 color = next(colors)
-                current_legend_label = legend_label[j]
+                current_legend_label = legend_labels[j]
                 source_name = f"{re.sub(r'[^a-zA-Z0-9_]', '_', str(current_legend_label))}_{i}_{j}"
-
-                if not isinstance(arr, pd.Series):
-                    arr = pd.Series(arr, index=value.index)
 
                 if arr.dtype == bool:
                     arr = arr.astype(int)
-
-                if not arr.index.equals(source.data['index']):
-                     arr = arr.reindex(source.data['index'])
-
                 source.add(arr, source_name)
-                tooltips.append(f"@{{{source_name}}}{{0,0.0[0000]}}")
-
+                tooltips.append(f'@{{{source_name}}}{{0,0.0[0000]}}')
                 if is_overlay:
                     ohlc_extreme_values[source_name] = arr
                     if is_scatter:
-                        renderer = fig.scatter(
-                            "index",
-                            source_name,
-                            source=source,
-                            legend_label=current_legend_label,
-                            color=color,
-                            line_color="black",
-                            fill_alpha=0.8,
-                            marker="circle",
-                            radius=BAR_WIDTH / 2 * 1.5,
-                        )
+                        fig.circle(
+                            'index', source_name, source=source,
+                            legend_label=legend_labels[j], color=color,
+                            line_color='black', fill_alpha=.8,
+                            radius=BAR_WIDTH / 2 * .9)
                     else:
-                        renderer = fig.line(
-                            "index",
-                            source_name,
-                            source=source,
-                            legend_label=current_legend_label,
-                            line_color=color,
-                            line_width=1.3,
-                        )
-                    renderers_for_fig.append(renderer)
+                        fig.line(
+                            'index', source_name, source=source,
+                            legend_label=legend_labels[j], line_color=color,
+                            line_width=1.3)
                 else:
                     if is_scatter:
-                        renderer = fig.scatter(
-                            "index",
-                            source_name,
-                            source=source,
-                            legend_label=current_legend_label,
-                            color=color,
-                            marker="circle",
-                            radius=BAR_WIDTH / 2 * 0.9,
-                        )
+                        r = fig.circle(
+                            'index', source_name, source=source,
+                            legend_label=legend_labels[j], color=color,
+                            radius=BAR_WIDTH / 2 * .6)
                     else:
-                        renderer = fig.line(
-                            "index",
-                            source_name,
-                            source=source,
-                            legend_label=current_legend_label,
-                            line_color=color,
-                            line_width=1.3,
-                        )
-                    renderers_for_fig.append(renderer)
-
-                    if pd.api.types.is_numeric_dtype(arr):
-                        mean = float(arr.mean())
-                        if not np.isnan(mean) and (
-                            abs(mean) < 0.1
-                            or round(abs(mean), 1) == 0.5
-                            or round(abs(mean), -1) in (50, 100, 200)
-                        ):
-                            fig.add_layout(
-                                Span(
-                                    location=float(mean),
-                                    dimension="width",
-                                    line_color="#666666",
-                                    line_dash="dashed",
-                                    line_width=0.5,
-                                )
-                            )
-
-            label_tooltip_pairs = [
-                (str(label), tooltip) for label, tooltip in zip(legend_label, tooltips)
-            ]
+                        r = fig.line(
+                            'index', source_name, source=source,
+                            legend_label=legend_labels[j], line_color=color,
+                            line_width=1.3)
+                    # Add dashed centerline just because
+                    mean = try_(lambda: float(pd.Series(arr).mean()), default=np.nan)
+                    if not np.isnan(mean) and (abs(mean) < .1 or
+                                               round(abs(mean), 1) == .5 or
+                                               round(abs(mean), -1) in (50, 100, 200)):
+                        fig.add_layout(Span(location=float(mean), dimension='width',
+                                            line_color='#666666', line_dash='dashed',
+                                            level='underlay', line_width=.5))
             if is_overlay:
-                ohlc_tooltips.extend(label_tooltip_pairs)
+                ohlc_tooltips.append((tooltip_label, NBSP.join(tooltips)))
             else:
-                set_tooltips(fig, label_tooltip_pairs, vline=True, renderers=renderers_for_fig)
-                if len(series_lst) == 1:
+                set_tooltips(fig, [(tooltip_label, NBSP.join(tooltips))], vline=True, renderers=[r])
+                # If the sole indicator line on this figure,
+                # have the legend only contain text without the glyph
+                if len(value) == 1:
                     fig.legend.glyph_width = 0
         return indicator_figs
 

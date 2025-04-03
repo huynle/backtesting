@@ -537,10 +537,28 @@ class FractionalBacktest(Backtest):
                 'Use `FractionalBacktest(..., fractional_unit=)`.',
                 category=DeprecationWarning, stacklevel=2)
             fractional_unit = 1 / kwargs.pop('satoshi')
-        data = data.copy()
-        data[['Open', 'High', 'Low', 'Close']] *= fractional_unit
-        data['Volume'] /= fractional_unit
+        self._fractional_unit = fractional_unit
+        with warnings.catch_warnings(record=True):
+            warnings.filterwarnings(action='ignore', message='frac')
         super().__init__(data, *args, **kwargs)
+
+    def run(self, **kwargs) -> pd.Series:
+        data = self._data.copy()
+        data[['Open', 'High', 'Low', 'Close']] *= self._fractional_unit
+        data['Volume'] /= self._fractional_unit
+        with patch(self, '_data', data):
+            result = super().run(**kwargs)
+
+        trades: pd.DataFrame = result['_trades']
+        trades['Size'] *= self._fractional_unit
+        trades[['EntryPrice', 'ExitPrice', 'TP', 'SL']] /= self._fractional_unit
+
+        indicators = result['_strategy']._indicators
+        for indicator in indicators:
+            if indicator._opts['overlay']:
+                indicator /= self._fractional_unit
+
+        return result
 
 
 # Prevent pdoc3 documenting __init__ signature of Strategy subclasses
@@ -572,7 +590,8 @@ class MultiBacktest:
         Wraps `backtesting.backtesting.Backtest.run`. Returns `pd.DataFrame` with
         currency indexes in columns.
         """
-        with mp.Pool() as pool, \
+        from . import Pool
+        with Pool() as pool, \
                 SharedMemoryManager() as smm:
             shm = [smm.df2shm(df) for df in self._dfs]
             results = _tqdm(
@@ -580,7 +599,8 @@ class MultiBacktest:
                           ((df_batch, self._strategy, self._bt_kwargs, kwargs)
                            for df_batch in _batch(shm))),
                 total=len(shm),
-                desc=self.__class__.__name__,
+                desc=self.run.__qualname__,
+                mininterval=2
             )
             df = pd.DataFrame(list(chain(*results))).transpose()
         return df
@@ -608,7 +628,7 @@ class MultiBacktest:
         """
         heatmaps = []
         # Simple loop since bt.optimize already does its own multiprocessing
-        for df in _tqdm(self._dfs, desc=self.__class__.__name__):
+        for df in _tqdm(self._dfs, desc=self.__class__.__name__, mininterval=2):
             bt = Backtest(df, self._strategy, **self._bt_kwargs)
             _best_stats, heatmap = bt.optimize(  # type: ignore
                 return_heatmap=True, return_optimization=False, **kwargs)
