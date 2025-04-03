@@ -186,7 +186,7 @@ class MLTrainOnceStrategy(Strategy):
             return
 
         # Proceed only with out-of-sample data. Prepare some variables
-        high, low, close = self.data.High, self.data.Low, self.data.Close
+        high, low, close = self.data.High.s, self.data.Low.s, self.data.Close.s
         current_time = self.data.index[-1]
 
         # Forecast the next movement
@@ -209,7 +209,7 @@ class MLTrainOnceStrategy(Strategy):
 
         # Additionally, set aggressive stop-loss on trades that have been open 
         # for more than two days
-        for trade in self.trades:
+        for trade in self.trades():
             if current_time - trade.entry_time > pd.Timedelta('2 days'):
                 if trade.is_long:
                     trade.sl = max(trade.sl, low)

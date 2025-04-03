@@ -46,10 +46,10 @@ class Sma4Cross(Strategy):
     n_exit = 10
     
     def init(self):
-        self.sma1 = self.I(SMA, self.data.Close, self.n1)
-        self.sma2 = self.I(SMA, self.data.Close, self.n2)
-        self.sma_enter = self.I(SMA, self.data.Close, self.n_enter)
-        self.sma_exit = self.I(SMA, self.data.Close, self.n_exit)
+        self.sma1 = self.I(SMA, self.data.Close.s, self.n1)
+        self.sma2 = self.I(SMA, self.data.Close.s, self.n2)
+        self.sma_enter = self.I(SMA, self.data.Close.s, self.n_enter)
+        self.sma_exit = self.I(SMA, self.data.Close.s, self.n_exit)
         
     def next(self):
         
@@ -61,14 +61,14 @@ class Sma4Cross(Strategy):
             # Here, even though the operands are arrays, this
             # works by implicitly comparing the two last values
             if self.sma1 > self.sma2:
-                if crossover(self.data.Close, self.sma_enter):
+                if crossover(self.data.Close.s, self.sma_enter):
                     self.buy()
                     
             # On downwards trend, if price closes below
             # "entry" MA, go short
             
             else:
-                if crossover(self.sma_enter, self.data.Close):
+                if crossover(self.sma_enter, self.data.Close.s):
                     self.sell()
         
         # But if we already hold a position and the price
@@ -76,10 +76,10 @@ class Sma4Cross(Strategy):
         
         else:
             if (self.position().is_long and
-                crossover(self.sma_exit, self.data.Close)
+                crossover(self.sma_exit, self.data.Close.s)
                 or
                 self.position().is_short and
-                crossover(self.data.Close, self.sma_exit)):
+                crossover(self.data.Close.s, self.sma_exit)):
                 
                 self.position().close()
 

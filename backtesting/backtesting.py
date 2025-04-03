@@ -736,11 +736,28 @@ class Strategy(ABC):
                 f'shape: {getattr(value, "shape", "")}, returned value: {value})')
 
         if plot and overlay is None and np.issubdtype(value.dtype, np.number):
-            x = value / self._data.Close
-            # By default, overlay if strong majority of indicator values
-            # is within 30% of Close
-            with np.errstate(invalid='ignore'):
-                overlay = ((x < 1.4) & (x > .6)).mean() > .6
+            # For multi-asset data, try to determine which asset's price to compare with
+            if len(getattr(self._data.Close, 'shape', ())) > 1:
+                # If we can infer the asset from the args (common case), use that asset's Close
+                ticker = None
+                for arg in args:
+                    if isinstance(arg, pd.Series) and isinstance(arg.name, tuple) and arg.name[0] in self._data.tickers:
+                        ticker = arg.name[0]
+                        break
+                
+                if ticker:
+                    close_price = self._data[ticker, "Close"]
+                    x = value / close_price
+                else:
+                    # Default to overlay=True for multi-asset data when we can't determine the asset
+                    overlay = True
+            else:
+                # Original logic for single-asset data
+                x = value / self._data.Close
+                # By default, overlay if strong majority of indicator values
+                # is within 30% of Close
+                with np.errstate(invalid='ignore'):
+                    overlay = ((x < 1.4) & (x > .6)).mean() > .6
 
         value = _Indicator(value, name=name, plot=plot, overlay=overlay,
                            color=color, scatter=scatter,
