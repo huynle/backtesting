@@ -691,7 +691,7 @@ class TestOptimize(TestCase):
         stats = bt.optimize(fast=[3], slow=[3])
         self.assertTrue(stats.isnull().any())
 
-    @unittest.skipUnless(False, "doesnt work for now")
+    # @unittest.skipUnless(False, "doesnt work for now")
     def test_optimize_speed(self):
         bt = Backtest(GOOG.iloc[:100], SmaCross)
         start = time.process_time()
