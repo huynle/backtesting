@@ -713,38 +713,27 @@ class Strategy(ABC):
                 value = funcval(*args, **kwargs)
             except Exception as e:
                 raise RuntimeError(f'Indicator "{name}" error. See traceback above.') from e
-
         else:
             value = funcval
 
-        if isinstance(value, (pd.DataFrame, pd.Series)):
-            if not value.index.equals(self._data.index):
-                raise ValueError(
-                    "Indicators of pd.DataFrame or pd.Series must have the same index as"
-                    f" `data` (data shape: {len(self._data)}; indicator shape: {len(value)}.\n"
-                    f"`data` index: {self._data.index}\n"
-                    f"Indicator index: {value.index}\n"
-                )
-            value = value.copy()
-        else:
-            if value is not None:
-                value = try_(lambda: np.asarray(value, order="C"), None)
-            is_arraylike = bool(value is not None and value.shape)
+        if value is not None:
+            value = try_(lambda: np.asarray(value, order="C"), None)
+        is_arraylike = bool(value is not None and value.shape)
 
-            # Optionally flip the array if the user returned e.g. `df.values`
-            if is_arraylike and np.argmax(value.shape) == 0:
-                value = value.T
+        # Optionally flip the array if the user returned e.g. `df.values`
+        if is_arraylike and np.argmax(value.shape) == 0:
+            value = value.T
 
-            if isinstance(name, list) and (np.atleast_2d(value).shape[0] != len(name)):
-                raise ValueError(
-                    f'Length of `name=` ({len(name)}) must agree with the number '
-                    f'of arrays the indicator returns ({value.shape[0]}).')
+        if isinstance(name, list) and (np.atleast_2d(value).shape[0] != len(name)):
+            raise ValueError(
+                f'Length of `name=` ({len(name)}) must agree with the number '
+                f'of arrays the indicator returns ({value.shape[0]}).')
 
-            if not is_arraylike or not 1 <= value.ndim <= 2 or value.shape[-1] != len(self._data.Close):
-                raise ValueError(
-                    'Indicators must return (optionally a tuple of) numpy.arrays of same '
-                    f'length as `data` (data shape: {self._data.Close.shape}; indicator "{name}" '
-                    f'shape: {getattr(value, "shape", "")}, returned value: {value})')
+        if not is_arraylike or not 1 <= value.ndim <= 2 or value.shape[-1] != len(self._data.Close):
+            raise ValueError(
+                'Indicators must return (optionally a tuple of) numpy.arrays of same '
+                f'length as `data` (data shape: {self._data.Close.shape}; indicator "{name}" '
+                f'shape: {getattr(value, "shape", "")}, returned value: {value})')
 
         # if plot and overlay is None and np.issubdtype(value.dtype, np.number):
         #     x = value / self._data.Close

@@ -415,18 +415,14 @@ class SignalStrategy(Strategy):
         If `plot` is `True`, the signal entry/exit indicators are plotted when
         `backtesting.backtesting.Backtest.plot` is called.
         """
-        if isinstance(entry_size, pd.DataFrame) and len(entry_size.columns) == 1:
-            entry_size = entry_size.iloc[:, 0]
-        entry_size = pd.Series(entry_size, dtype=float).replace(0, np.nan)
-        self.__entry_signal = self.I(entry_size, name='entry size', plot=plot,
-                                     overlay=False, scatter=True, color='black')
+        self.__entry_signal = self.I(  # type: ignore
+            lambda: pd.Series(entry_size, dtype=float).replace(0, np.nan),
+            name='entry size', plot=plot, overlay=False, scatter=True, color='black')
 
         if exit_portion is not None:
-            if isinstance(exit_portion, pd.DataFrame) and len(exit_portion.columns) == 1:
-                exit_portion = exit_portion.iloc[:, 0]
-            exit_portion = pd.Series(exit_portion, dtype=float).replace(0, np.nan)
-            self.__exit_signal = self.I(exit_portion, name='exit portion', plot=plot,
-                                        overlay=False, scatter=True, color='black')
+            self.__exit_signal = self.I(  # type: ignore
+                lambda: pd.Series(exit_portion, dtype=float).replace(0, np.nan),
+                name='exit portion', plot=plot, overlay=False, scatter=True, color='black')
 
     def next(self):
         super().next()
