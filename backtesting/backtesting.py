@@ -732,18 +732,19 @@ class Strategy(ABC):
             is_arraylike = bool(value is not None and value.shape)
 
             # Optionally flip the array if the user returned e.g. `df.values`
-            if is_arraylike and np.argmin(value.shape) == 0:
+            if is_arraylike and np.argmax(value.shape) == 0:
                 value = value.T
 
-            if not is_arraylike or not 1 <= value.ndim <= 2 or value.shape[0] != len(self._data):
+            if isinstance(name, list) and (np.atleast_2d(value).shape[0] != len(name)):
                 raise ValueError(
-                    'Indicators of numpy.ndarray must have the same '
-                    f'length as `data` (data shape: {len(self._data)}; indicator "{name}" '
-                    f'shape: {getattr(value, "shape" , "")}, returned value: {value})')
-            elif value.ndim == 1:
-                value = pd.Series(value, index=self._data.index, name=name)
-            else:
-                value = pd.DataFrame(value, index=self._data.index)
+                    f'Length of `name=` ({len(name)}) must agree with the number '
+                    f'of arrays the indicator returns ({value.shape[0]}).')
+
+            if not is_arraylike or not 1 <= value.ndim <= 2 or value.shape[-1] != len(self._data.Close):
+                raise ValueError(
+                    'Indicators must return (optionally a tuple of) numpy.arrays of same '
+                    f'length as `data` (data shape: {self._data.Close.shape}; indicator "{name}" '
+                    f'shape: {getattr(value, "shape", "")}, returned value: {value})')
 
         # if plot and overlay is None and np.issubdtype(value.dtype, np.number):
         #     x = value / self._data.Close
@@ -1235,8 +1236,7 @@ class Order:
             elif self is trade._tp_order:
                 trade._replace(tp_order=None)
             else:
-                # XXX: https://github.com/kernc/backtesting.py/issues/251#issuecomment-835634984 ???
-                assert False
+                pass  # Order placed by Trade.close()
 
     # Fields getters
 
@@ -1758,23 +1758,20 @@ class _Broker:
                     "Short orders require: "
                     f"TP ({tp}) < LIMIT ({limit or stop or adjusted_price}) < SL ({sl})"
                 )
-
         order = Order(self, ticker, size, limit, stop, sl, tp, trade, self.now, tag=tag)
-        # Put the new order in the order queue,
-        # inserting SL/TP/trade-closing orders in-front
-        if trade:
-            self.orders.insert(0, order)
-        else:
+
+        if not trade:
             # If exclusive orders (each new order auto-closes previous orders/position),
             # cancel all non-contingent orders and close all open trades beforehand
             if self._exclusive_orders:
                 for o in self.orders:
                     if not o.is_contingent:
                         o.cancel()
-                for t in self.trades[ticker]:
+                for t in self.trades:
                     t.close()
 
-            self.orders.append(order)
+        # Put the new order in the order queue, Ensure SL orders are processed first
+        self.orders.insert(0 if trade and stop else len(self.orders), order)
 
         return order
 
@@ -2115,14 +2112,13 @@ class _Broker:
 
         closed_trade = trade._replace(exit_price=price, exit_bar=time_index)
         self.closed_trades.append(closed_trade)
-        
-        # Apply commission one more time at trade exit, similar to reference implementation
+        # Apply commission one more time at trade exit
         commission = self._commission(trade.size, price)
         self._cash += trade.pl - commission
-        
         # Save commissions on Trade instance for stats
         trade_open_commission = self._commission(closed_trade.size, closed_trade.entry_price)
-        # Applied here instead of on Trade open because size could have changed by way of _reduce_trade()
+        # applied here instead of on Trade open because size could have changed
+        # by way of _reduce_trade()
         closed_trade._commissions = commission + trade_open_commission
 
     def _open_trade(

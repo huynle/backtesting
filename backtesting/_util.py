@@ -226,8 +226,17 @@ class _Data:
 
     @property
     def df(self) -> pd.DataFrame:
-        df_ = self._df[self.the_ticker] if len(self.tickers) == 1 else self._df
-        return df_.iloc[:self._len] if self._len < len(df_) else df_
+        """Return a DataFrame view of the data."""
+        if not hasattr(self, '_df_cache') or self._df_cache is None:
+            if len(self.tickers) == 1:
+                # Use .loc to ensure you get a reference, not a copy
+                self._df_cache = self._df.loc[:, self.the_ticker]
+            else:
+                self._df_cache = self._df
+        
+        # Return the slice of the cached DataFrame
+        return self._df_cache.iloc[:self._len] if self._len < len(self._df_cache) else self._df_cache
+    
 
     @property
     def pip(self) -> float:
@@ -278,7 +287,7 @@ class _Data:
     @property
     def index(self) -> pd.DatetimeIndex:
         # return self.__get_array('__index').df   # return pd.DatetimeIndex
-        return self._df.index   # return pd.DatetimeIndex
+        return self._df.index[:self._len]
 
     # Make pickling in Backtest.optimize() work with our catch-all __getattr__
     def __getstate__(self):

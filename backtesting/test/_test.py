@@ -865,9 +865,9 @@ class TestPlot(TestCase):
                 )
 
                 for overlay in (True, False):
-                    self.I(SMA, self.data.Close, 5, overlay=overlay)
-                    self.I(SMA, self.data.Close, 5, name="My SMA", overlay=overlay)
-                    self.I(SMA, self.data.Close, 5, name=("My SMA",), overlay=overlay)
+                    self.I(SMA, self.data.Close.s, 5, overlay=overlay)
+                    self.I(SMA, self.data.Close.s, 5, name="My SMA", overlay=overlay)
+                    self.I(SMA, self.data.Close.s, 5, name=("My SMA",), overlay=overlay)
                     self.I(_SMA, overlay=overlay)
                     self.I(_SMA, name="My SMA", overlay=overlay)
                     self.I(_SMA, name=("SMA One", "SMA Two"), overlay=overlay)
@@ -1165,7 +1165,7 @@ class TestRegressions(TestCase):
         arr = np.r_[100, 100, 100, 50, 50]
         df = pd.DataFrame({"Open": arr, "High": arr, "Low": arr, "Close": arr})
         with self.assertWarnsRegex(UserWarning, "index is not datetime"):
-            bt = Backtest(df, S, cash=100, trade_on_close=True)
+            bt = Backtest(df, S, cash=100, fail_fast=False, trade_on_close=True)
         self.assertEqual(bt.run()._trades["ExitPrice"][0], 50)
 
     def test_stats_annualized(self):
