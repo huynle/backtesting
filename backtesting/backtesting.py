@@ -758,8 +758,10 @@ class Strategy(ABC):
         Precompute what needs to be precomputed or can be precomputed
         in a vectorized fashion before the strategy starts.
 
-        If you extend composable strategies from `backtesting.backtesting.lib`,
-        make sure to call: `super().init()`
+        If you extend composable strategies from `backtesting.lib`,
+        make sure to call:
+
+            super().init()
         """
 
     @abstractmethod
@@ -772,56 +774,65 @@ class Strategy(ABC):
         upon data precomputed in `backtesting.backtesting.Strategy.init`
         take place.
 
-        If you extend composable strategies from `backtesting.backtesting.lib`,
-        make sure to call: `super().next()`
+        If you extend composable strategies from `backtesting.lib`,
+        make sure to call:
+
+            super().next()
         """
 
     class __FULL_EQUITY(float):  # noqa: N801
-        def __repr__(self):
-            return ".9999"
-
+        def __repr__(self): return '.9999'  # noqa: E704
     _FULL_EQUITY = __FULL_EQUITY(1 - sys.float_info.epsilon)
 
-    def buy(
-        self,
-        *,
+    def buy(self, *,
         ticker: str = None,
         size: float = _FULL_EQUITY,
         limit: Optional[float] = None,
         stop: Optional[float] = None,
         sl: Optional[float] = None,
         tp: Optional[float] = None,
-        tag: object = None,
-    ):
+        tag: object = None) -> 'Order':
         """
-        Place a new long order. For explanation of parameters, see `Order` and its properties.
-
-        For single asset strategy, `ticker` can be left as None.
+        Place a new long order and return it. For explanation of parameters, see `Order`
+        and its properties.
+        Unless you're running `Backtest(..., trade_on_close=True)`,
+        market orders are filled on next bar's open,
+        whereas other order types (limit, stop-limit, stop-market) are filled when
+        the respective conditions are met.
 
         See `Position.close()` and `Trade.close()` for closing existing positions.
 
         See also `Strategy.sell()`.
+        
+        For single asset strategy, `ticker` can be left as None.
         """
-        assert (
-            0 < size < 1 or round(size) == size >= 1
-        ), "size must be a positive fraction of equity, or a positive whole number of units"
+        assert 0 < size < 1 or round(size) == size >= 1, \
+            "size must be a positive fraction of equity, or a positive whole number of units"
         return self._broker.new_order(ticker, size, limit, stop, sl, tp, tag)
 
-    def sell(
-        self,
-        *,
+    def sell(self, *,
         ticker: str = None,
         size: float = _FULL_EQUITY,
         limit: Optional[float] = None,
         stop: Optional[float] = None,
         sl: Optional[float] = None,
         tp: Optional[float] = None,
-        tag: object = None,
-    ):
+        tag: object = None) -> 'Order':
         """
-        Place a new short order. For explanation of parameters, see `Order` and its properties.
+        Place a new short order and return it. For explanation of parameters, see `Order`
+        and its properties.
 
         For single asset strategy, `ticker` can be left as None.
+
+        .. caution::
+            Keep in mind that `self.sell(size=.1)` doesn't close existing `self.buy(size=.1)`
+            trade unless:
+
+            * the backtest was run with `exclusive_orders=True`,
+            * the underlying asset price is equal in both cases and
+              the backtest was run with `spread = commission = 0`.
+
+            Use `Trade.close()` or `Position.close()` to explicitly exit trades.
 
         See also `Strategy.buy()`.
 
