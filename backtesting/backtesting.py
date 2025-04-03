@@ -735,12 +735,12 @@ class Strategy(ABC):
                 f'length as `data` (data shape: {self._data.Close.shape}; indicator "{name}" '
                 f'shape: {getattr(value, "shape", "")}, returned value: {value})')
 
-        # if plot and overlay is None and np.issubdtype(value.dtype, np.number):
-        #     x = value / self._data.Close
-        #     # By default, overlay if strong majority of indicator values
-        #     # is within 30% of Close
-        #     with np.errstate(invalid='ignore'):
-        #         overlay = ((x < 1.4) & (x > .6)).mean() > .6
+        if plot and overlay is None and np.issubdtype(value.dtype, np.number):
+            x = value / self._data.Close
+            # By default, overlay if strong majority of indicator values
+            # is within 30% of Close
+            with np.errstate(invalid='ignore'):
+                overlay = ((x < 1.4) & (x > .6)).mean() > .6
 
         value = _Indicator(value, name=name, plot=plot, overlay=overlay,
                            color=color, scatter=scatter,
@@ -2498,7 +2498,7 @@ class Backtest:
                 trade_start_bar=start,
             )
 
-        return self._results.copy()
+        return self._results
 
     def optimize(
         self,

@@ -26,7 +26,7 @@ import pandas as pd
 
 from ._plotting import plot_heatmaps as _plot_heatmaps
 from ._stats import compute_stats as _compute_stats
-from ._util import SharedMemoryManager, _Array, _as_str, _batch, _tqdm
+from ._util import SharedMemoryManager, _Array, _as_str, _batch, _tqdm, patch
 from .backtesting import Backtest, Strategy
 
 __pdoc__ = {}
@@ -539,9 +539,34 @@ class FractionalBacktest(Backtest):
         super().__init__(data, *args, **kwargs)
 
     def run(self, **kwargs) -> pd.Series:
+        """
+        Run the backtest with fractional units.
+        
+        This method overrides the parent's run method to handle fractional trading by:
+        1. Scaling price data (Open, High, Low, Close) up by the fractional unit
+        2. Scaling volume down by the fractional unit
+        3. Running the backtest with the scaled data
+        4. Adjusting the resulting trades and indicators back to their original scale
+        
+        Returns:
+            pd.Series: Results and statistics from the backtest
+        """
         data = self._data.copy()
-        data[['Open', 'High', 'Low', 'Close']] *= self._fractional_unit
-        data['Volume'] /= self._fractional_unit
+        
+        # Handle multi-level dataframe (multiple assets)
+        if data.columns.nlevels == 2:
+            # For each ticker in the multi-asset dataframe
+            for ticker in data.columns.levels[0]:
+                data.loc[:, (ticker, 'Open')] *= self._fractional_unit
+                data.loc[:, (ticker, 'High')] *= self._fractional_unit
+                data.loc[:, (ticker, 'Low')] *= self._fractional_unit
+                data.loc[:, (ticker, 'Close')] *= self._fractional_unit
+                data.loc[:, (ticker, 'Volume')] /= self._fractional_unit
+        else:
+            # Original single-asset case
+            data[['Open', 'High', 'Low', 'Close']] *= self._fractional_unit
+            data['Volume'] /= self._fractional_unit
+        
         with patch(self, '_data', data):
             result = super().run(**kwargs)
 
@@ -555,6 +580,7 @@ class FractionalBacktest(Backtest):
                 indicator /= self._fractional_unit
 
         return result
+    
 
 
 # Prevent pdoc3 documenting __init__ signature of Strategy subclasses
