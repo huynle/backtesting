@@ -67,3 +67,7 @@ build-backend = "poetry.core.masonry.api"
 [tool.ruff]
 # Exclude line length checks
 ignore = ["E501"]
+
+
+[tool.ruff.format]
+quote-style = "single"  # Preserves single quotes instead of converting to double quotes

@@ -28,7 +28,7 @@ import pandas as pd
 from numpy.random import default_rng
 
 from ._plotting import plot  # noqa: I001
-from ._stats import compute_stats
+from ._stats import compute_stats, dummy_stats
 from ._util import (
     SharedMemoryManager,
     _as_str,
@@ -1767,7 +1767,7 @@ class _Broker:
                 for o in self.orders:
                     if not o.is_contingent:
                         o.cancel()
-                for t in self.trades:
+                for t in self.trades[ticker]:
                     t.close()
 
         # Put the new order in the order queue, Ensure SL orders are processed first
@@ -2462,17 +2462,16 @@ class Backtest:
                         for trade in list(broker.trades[ticker]):
                             trade.close()
 
-
-                    # HACK: Re-run broker one last time to handle close orders placed in the last
-                    #  strategy iteration. Use the same OHLC values as in the last broker iteration.
                     if start < len(self._data):
                         try_(broker.next, exception=_OutOfMoneyError)
                         broker.finalize()
 
-                    # take note of the final positions
-                    final_positions = {t: p.size for t, p in broker.positions.items()} | {
-                        "Cash": int(broker.margin_available)
-                    }
+
+                # take note of the final positions
+                final_positions = {t: p.size for t, p in broker.positions.items()} | {
+                    "Cash": int(broker.margin_available)
+                }
+
 
             # Set data back to full length
             # for future `indicator._opts['data'].index` calls to work
@@ -2570,34 +2569,28 @@ class Backtest:
         code finds and returns the "best" of the 7 admissible (of the
         9 possible) parameter combinations:
 
-            backtest.optimize(sma1=[5, 10, 15], sma2=[10, 20, 40],
+            best_stats = backtest.optimize(sma1=[5, 10, 15], sma2=[10, 20, 40],
                               constraint=lambda p: p.sma1 < p.sma2)
-
-        .. TODO::
-            Improve multiprocessing/parallel execution on Windos with start method 'spawn'.
         """
         if not kwargs:
-            raise ValueError("Need some strategy parameters to optimize")
+            raise ValueError('Need some strategy parameters to optimize')
 
         maximize_key = None
         if isinstance(maximize, str):
             maximize_key = str(maximize)
+            # if maximize not in dummy_stats(self._data).index:
             stats = self._results if self._results is not None else self.run()
             if maximize not in stats:
-                raise ValueError(
-                    "`maximize`, if str, must match a key in pd.Series "
-                    "result of backtest.run()"
-                )
+                raise ValueError('`maximize`, if str, must match a key in pd.Series '
+                                 'result of backtest.run()')
 
             def maximize(stats: pd.Series, _key=maximize):
                 return stats[_key]
 
         elif not callable(maximize):
-            raise TypeError(
-                "`maximize` must be str (a field of backtest.run() result "
-                "Series) or a function that accepts result Series "
-                "and returns a number; the higher the better"
-            )
+            raise TypeError('`maximize` must be str (a field of backtest.run() result '
+                            'Series) or a function that accepts result Series '
+                            'and returns a number; the higher the better')
         assert callable(maximize), maximize
 
         have_constraint = bool(constraint)
@@ -2607,11 +2600,9 @@ class Backtest:
                 return True
 
         elif not callable(constraint):
-            raise TypeError(
-                "`constraint` must be a function that accepts a dict "
+            raise TypeError("`constraint` must be a function that accepts a dict "
                 "of strategy parameters and returns a bool whether "
-                "the combination of parameters is admissible or not"
-            )
+                            "the combination of parameters is admissible or not")
         assert callable(constraint), constraint
 
         if method == "skopt":
@@ -2629,10 +2620,8 @@ class Backtest:
 
         for k, v in kwargs.items():
             if len(_tuple(v)) == 0:
-                raise ValueError(
-                    f"Optimization variable '{k}' is passed no "
-                    f"optimization values: {k}={v}"
-                )
+                raise ValueError(f"Optimization variable '{k}' is passed no "
+                                 f"optimization values: {k}={v}")
 
         class AttrDict(dict):
             def __getattr__(self, item):
@@ -2641,74 +2630,46 @@ class Backtest:
         def _grid_size():
             size = int(np.prod([len(_tuple(v)) for v in kwargs.values()]))
             if size < 10_000 and have_constraint:
-                size = sum(
-                    1
-                    for p in product(
-                        *(zip(repeat(k), _tuple(v)) for k, v in kwargs.items())
-                    )
-                    if constraint(AttrDict(p))
-                )
+                size = sum(1 for p in product(*(zip(repeat(k), _tuple(v))
+                                                for k, v in kwargs.items()))
+                           if constraint(AttrDict(p)))
             return size
 
         def _optimize_grid() -> Union[pd.Series, Tuple[pd.Series, pd.Series]]:
             rand = default_rng(random_state).random
-            grid_frac = (
-                1
-                if max_tries is None
-                else max_tries
-                if 0 < max_tries <= 1
-                else max_tries / _grid_size()
-            )
-            param_combos = [
-                dict(params)  # back to dict so it pickles
-                for params in (
-                    AttrDict(params)
-                    for params in product(
-                        *(zip(repeat(k), _tuple(v)) for k, v in kwargs.items())
-                    )
-                )
-                if constraint(params)  # type: ignore
-                and rand() <= grid_frac
-            ]
+            grid_frac = (1 if max_tries is None else
+                         max_tries if 0 < max_tries <= 1 else
+                         max_tries / _grid_size())
+            param_combos = [dict(params)  # back to dict so it pickles
+                            for params in (AttrDict(params)
+                                           for params in product(*(zip(repeat(k), _tuple(v))
+                                                                   for k, v in kwargs.items())))
+                            if constraint(params)
+                            and rand() <= grid_frac]
             if not param_combos:
-                raise ValueError("No admissible parameter combinations to test")
+                raise ValueError('No admissible parameter combinations to test')
 
-            if len(param_combos) > 1000:
-                warnings.warn(
-                    f"Searching for best of {len(param_combos)} configurations.",
-                    stacklevel=2,
-                )
+            if len(param_combos) > 300:
+                warnings.warn(f'Searching for best of {len(param_combos)} configurations.',
+                              stacklevel=2)
 
-            heatmap = pd.Series(
-                np.nan,
+            heatmap = pd.Series(np.nan,
                 name=maximize_key,
                 index=pd.MultiIndex.from_tuples(
                     [p.values() for p in param_combos],
-                    names=next(iter(param_combos)).keys(),
-                ),
-            )
+                                    names=next(iter(param_combos)).keys()))
 
-            if mp.get_start_method(allow_none=False) != "fork":
-                if os.name == "posix":  # Only warn on POSIX if not using fork
-                    warnings.warn(
-                        "For multiprocessing support in `Backtest.optimize()` "
-                        "set multiprocessing start method to 'fork'.",
-                        UserWarning,
-                    )
-
-            with mp.Pool() as pool, SharedMemoryManager() as smm:
-                with patch(self, "_data", None):
+            from . import Pool
+            with Pool() as pool, \
+                    SharedMemoryManager() as smm:
+                with patch(self, '_data', None):
                     bt = copy(self)  # bt._data will be reassigned in _mp_task worker
                 results = _tqdm(
-                    pool.imap(
-                        Backtest._mp_task,
-                        (
-                            (bt, smm.df2shm(self._data), params_batch)
-                            for params_batch in _batch(param_combos)
-                        ),
-                    ),
+                    pool.imap(Backtest._mp_task,
+                              ((bt, smm.df2shm(self._data), params_batch)
+                               for params_batch in _batch(param_combos))),
                     total=len(param_combos),
-                    desc="Backtest.optimize",
+                    desc='Backtest.optimize'
                 )
                 for param_batch, result in zip(_batch(param_combos), results):
                     for params, stats in zip(param_batch, result):
@@ -2742,13 +2703,9 @@ class Backtest:
                 ) from None
 
             nonlocal max_tries
-            max_tries = (
-                200
-                if max_tries is None
-                else max(1, int(max_tries * _grid_size()))
-                if 0 < max_tries <= 1
-                else max_tries
-            )
+            max_tries = (200 if max_tries is None else
+                         max(1, int(max_tries * _grid_size())) if 0 < max_tries <= 1 else
+                         max_tries)
 
             dimensions = []
             for key, values in kwargs.items():
@@ -2772,11 +2729,8 @@ class Backtest:
                 stats = self.run(**dict(tup))
                 return -maximize(stats)
 
-            progress = iter(
-                _tqdm(
-                    repeat(None), total=max_tries, leave=False, desc="Backtest.optimize"
-                )
-            )
+            progress = iter(_tqdm(repeat(None), total=max_tries, leave=False,
+                                  desc=self.optimize.__qualname__, mininterval=2))
             _names = tuple(kwargs.keys())
 
             def objective_function(x):
@@ -2794,17 +2748,15 @@ class Backtest:
                 bounds=dimensions,
                 constraints=cons,
                 max_iter=max_tries,
-                method="sceua",
-                rng=random_state,
-            )
+                method='sceua',
+                rng=random_state)
 
             stats = self.run(**dict(zip(kwargs.keys(), res.x)))
             output = [stats]
 
             if return_heatmap:
-                heatmap = pd.Series(
-                    dict(zip(map(tuple, res.xv), -res.funv)), name=maximize_key
-                )
+                heatmap = pd.Series(dict(zip(map(tuple, res.xv), -res.funv)),
+                                    name=maximize_key)
                 heatmap.index.names = kwargs.keys()
                 heatmap.sort_index(inplace=True)
                 output.append(heatmap)
@@ -2814,9 +2766,9 @@ class Backtest:
 
             return stats if len(output) == 1 else tuple(output)
 
-        if method == "grid":
+        if method == 'grid':
             output = _optimize_grid()
-        elif method in ("sambo", "skopt"):
+        elif method in ('sambo', 'skopt'):
             output = _optimize_sambo()
         else:
             raise ValueError(f"Method should be 'grid' or 'sambo', not {method!r}")
@@ -2827,10 +2779,9 @@ class Backtest:
         bt, data_shm, params_batch = arg
         bt._data, shm = SharedMemoryManager.shm2df(data_shm)
         try:
-            return [
-                stats.filter(regex="^[^_]") if stats["# Trades"] else None
-                for stats in (bt.run(**params) for params in params_batch)
-            ]
+            return [stats.filter(regex='^[^_]') if stats['# Trades'] else None
+                    for stats in (bt.run(**params)
+                                  for params in params_batch)]
         finally:
             for shmem in shm:
                 shmem.close()

@@ -215,3 +215,25 @@ class _Stats(pd.Series):
         ):
             return super().__repr__()
 
+
+def dummy_stats(_data=None):
+    from .backtesting import Trade, _Broker, _Data
+    if _data is None:
+        index = pd.DatetimeIndex(['2025'])
+        _data = pd.DataFrame({col: [np.nan] for col in ('Close',)}, index=index)
+    data = _Data(_data.copy(deep=False))
+    _broker = _Broker(data=data, cash=10000, spread=.01, commission=.01, margin=.1,
+                          trade_on_close=True, hedging=True, exclusive_orders=False,
+                          holding={},trade_start_date=None,lot_size=1,fail_fast=True,storage=None)
+    trade = Trade(_broker, 'Asset', 1, 1, 0, None)
+    trade._replace(exit_price=1, exit_bar=0)
+    equity = (
+        pd.DataFrame(
+            _broker._equity,
+            index=data.index,
+            columns=["Equity", *data.tickers, "Cash"],
+        )
+        .bfill()
+        .fillna(_broker._cash)
+    )
+    return compute_stats(orders=[], trades=[trade], equity=equity, ohlc_data=data, strategy_instance=None, risk_free_rate=0,)
