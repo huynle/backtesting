@@ -1054,7 +1054,7 @@ class TestRegressions(TestCase):
         arr = np.r_[100, 100, 100, 50, 50]
         df = pd.DataFrame({'Open': arr, 'High': arr, 'Low': arr, 'Close': arr})
         with self.assertWarnsRegex(UserWarning, 'index is not datetime'):
-            bt = Backtest(df, S, cash=100, trade_on_close=True)
+            bt = Backtest(df, S, cash=100, fail_fast=False, trade_on_close=True)
         self.assertEqual(bt.run()._trades['ExitPrice'][0], 50)
 
     def test_stats_annualized(self):
