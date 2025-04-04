@@ -19,9 +19,7 @@ from backtesting import Backtest, Strategy
 from backtesting._stats import compute_drawdown_duration_peaks
 from backtesting._util import _Array, _as_str, _Indicator, patch, try_
 from backtesting.lib import (
-    FractionalBacktest,
-    MultiBacktest,
-    OHLCV_AGG,
+    FractionalBacktest, MultiBacktest, OHLCV_AGG,
     SignalStrategy,
     TrailingStrategy,
     barssince,
@@ -62,8 +60,8 @@ class SmaCross(Strategy):
     slow = 30
 
     def init(self):
-        self.sma1 = self.I(SMA, self.data.Close.s, self.fast)
-        self.sma2 = self.I(SMA, self.data.Close.s, self.slow)
+        self.sma1 = self.I(SMA, self.data.Close, self.fast)
+        self.sma2 = self.I(SMA, self.data.Close, self.slow)
 
     def next(self):
         if crossover(self.sma1, self.sma2):
@@ -636,8 +634,8 @@ class TestOptimize(TestCase):
         bt.optimize(fast=range(2, 20, 2), slow=range(10, 40, 2))
         end = time.process_time()
         print(end - start)
-        handicap = 5 if "win" in sys.platform else 0.1
-        self.assertLess(end - start, 0.3 + handicap)
+        handicap = 5 if 'win' in sys.platform else .1
+        self.assertLess(end - start, .3 + handicap)
 
 
 class TestPlot(TestCase):
@@ -649,27 +647,25 @@ class TestPlot(TestCase):
         bt = Backtest(GOOG, SmaCross)
         bt.run()
         with _tempfile() as f:
-            bt.plot(filename=f[: -len(".html")], open_browser=False)
+            bt.plot(filename=f[:-len('.html')], open_browser=False)
             self.assertLess(os.path.getsize(f), 500000)
 
     def test_params(self):
         bt = Backtest(GOOG.iloc[:100], SmaCross)
         bt.run()
         with _tempfile() as f:
-            for p in dict(
-                plot_volume=False,  # noqa: C408
+            for p in dict(plot_volume=False,  # noqa: C408
                 plot_equity=False,
                 plot_return=True,
                 plot_pl=False,
                 plot_drawdown=True,
                 plot_trades=False,
                 superimpose=False,
-                resample="1W",
+                          resample='1W',
                 smooth_equity=False,
                 relative_equity=False,
                 reverse_indicators=True,
-                show_legend=False,
-            ).items():
+                          show_legend=False).items():
                 with self.subTest(param=p[0]):
                     bt.plot(**dict([p]), filename=f, open_browser=False)
 
@@ -684,15 +680,9 @@ class TestPlot(TestCase):
     # @unittest.skipUnless(False, "doesnt work for now")
     def test_resolutions(self):
         with _tempfile() as f:
-            for rule in "ms s min h D W ME".split():
+            for rule in 'ms s min h D W ME'.split():
                 with self.subTest(rule=rule):
-                    df = (
-                        EURUSD.iloc[:2]
-                        .resample(rule)
-                        .agg(OHLCV_AGG)
-                        .dropna()
-                        .iloc[:1100]
-                    )
+                    df = EURUSD.iloc[:2].resample(rule).agg(OHLCV_AGG).dropna().iloc[:1100]
                     bt = Backtest(df, SmaCross)
                     bt.run()
                     bt.plot(filename=f, open_browser=False)
@@ -721,7 +711,7 @@ class TestPlot(TestCase):
                 def ok(x):
                     return x
 
-                self.a = self.I(SMA, self.data.Open.s, 5, overlay=False, name="ok")
+                self.a = self.I(SMA, self.data.Open, 5, overlay=False, name='ok')
                 self.b = self.I(ok, np.random.random(len(self.data.Open)))
 
         bt = Backtest(GOOG, Strategy)
@@ -735,33 +725,26 @@ class TestPlot(TestCase):
         class S(_S):
             def next(self):
                 date = self.data.index[-1]
-                if date == pd.Timestamp("Thu 19 Oct 2006"):
+                if date == pd.Timestamp('Thu 19 Oct 2006'):
                     self.buy(stop=484, limit=466, size=100)
-                elif date == pd.Timestamp("Thu 30 Oct 2007"):
+                elif date == pd.Timestamp('Thu 30 Oct 2007'):
                     self.position().close()
-                elif date == pd.Timestamp("Tue 11 Nov 2008"):
-                    self.sell(
-                        stop=self.data.Low,
+                elif date == pd.Timestamp('Tue 11 Nov 2008'):
+                    self.sell(stop=self.data.Low,
                         limit=324.90,  # High from 14 Nov
-                        size=200,
-                    )
+                              size=200)
 
-        bt = Backtest(GOOG, S, margin=0.1)
+        bt = Backtest(GOOG, S, margin=.1)
         stats = bt.run()
-        trades = stats["_trades"]
+        trades = stats['_trades']
 
-        self.assertAlmostEqual(stats["Equity Peak [$]"], 46961)
-        self.assertEqual(stats["Equity Final [$]"], 0)
+        self.assertAlmostEqual(stats['Equity Peak [$]'], 46961)
+        self.assertEqual(stats['Equity Final [$]'], 0)
         self.assertEqual(len(trades), 2)
-        assert trades[["EntryTime", "ExitTime"]].equals(
-            pd.DataFrame(
-                {
-                    "EntryTime": pd.to_datetime(["2006-11-01", "2008-11-14"]),
-                    "ExitTime": pd.to_datetime(["2007-10-31", "2009-09-21"]),
-                }
-            )
-        )
-        assert trades["PnL"].round().equals(pd.Series([23469.0, -34420.0]))
+        assert trades[['EntryTime', 'ExitTime']].equals(
+            pd.DataFrame({'EntryTime': pd.to_datetime(['2006-11-01', '2008-11-14']),
+                          'ExitTime': pd.to_datetime(['2007-10-31', '2009-09-21'])}))
+        assert trades['PnL'].round().equals(pd.Series([23469., -34420.]))
 
         with _tempfile() as f:
             bt.plot(filename=f, plot_drawdown=True, smooth_equity=False)
@@ -771,18 +754,15 @@ class TestPlot(TestCase):
     def test_resample(self):
         class S(SmaCross):
             def init(self):
-                self.I(lambda: ["x"] * len(self.data))  # categorical indicator, GH-309
+                self.I(lambda: ['x'] * len(self.data))  # categorical indicator, GH-309
                 super().init()
 
         bt = Backtest(GOOG, S)
         bt.run()
         import backtesting._plotting
-
-        with (
-            _tempfile() as f,
-            patch(backtesting._plotting, "_MAX_CANDLES", 10),
-            self.assertWarns(UserWarning),
-        ):
+        with _tempfile() as f, \
+                patch(backtesting._plotting, '_MAX_CANDLES', 10), \
+                self.assertWarns(UserWarning):
             bt.plot(filename=f, resample=True)
             # Give browser time to open before tempfile is removed
             time.sleep(1)
@@ -793,18 +773,17 @@ class TestPlot(TestCase):
         class S(Strategy):
             def init(self):
                 def _SMA():
-                    return SMA(self.data.Close.s, 5), SMA(self.data.Close.s, 10)
+                    return SMA(self.data.Close, 5), SMA(self.data.Close, 10)
 
                 test_self.assertRaises(TypeError, self.I, _SMA, name=42)
                 test_self.assertRaises(ValueError, self.I, _SMA, name=("SMA One",))
                 test_self.assertRaises(
-                    ValueError, self.I, _SMA, name=("SMA One", "SMA Two", "SMA Three")
-                )
+                    ValueError, self.I, _SMA, name=("SMA One", "SMA Two", "SMA Three"))
 
                 for overlay in (True, False):
-                    self.I(SMA, self.data.Close.s, 5, overlay=overlay)
-                    self.I(SMA, self.data.Close.s, 5, name="My SMA", overlay=overlay)
-                    self.I(SMA, self.data.Close.s, 5, name=("My SMA",), overlay=overlay)
+                    self.I(SMA, self.data.Close, 5, overlay=overlay)
+                    self.I(SMA, self.data.Close, 5, name="My SMA", overlay=overlay)
+                    self.I(SMA, self.data.Close, 5, name=("My SMA", ), overlay=overlay)
                     self.I(_SMA, overlay=overlay)
                     self.I(_SMA, name="My SMA", overlay=overlay)
                     self.I(_SMA, name=("SMA One", "SMA Two"), overlay=overlay)
@@ -815,21 +794,16 @@ class TestPlot(TestCase):
         bt = Backtest(GOOG, S)
         bt.run()
         with _tempfile() as f:
-            bt.plot(
-                filename=f,
-                plot_drawdown=False,
-                plot_equity=False,
-                plot_pl=False,
-                plot_volume=False,
-                open_browser=False,
-            )
+            bt.plot(filename=f,
+                    plot_drawdown=False, plot_equity=False, plot_pl=False, plot_volume=False,
+                    open_browser=False)
 
     def test_indicator_color(self):
         class S(Strategy):
             def init(self):
-                a = self.I(SMA, self.data.Close.s, 5, overlay=True, color="red")
-                b = self.I(SMA, self.data.Close.s, 10, overlay=False, color="blue")
-                self.I(lambda: (a, b), overlay=False, color=("green", "orange"))
+                a = self.I(SMA, self.data.Close, 5, overlay=True, color='red')
+                b = self.I(SMA, self.data.Close, 10, overlay=False, color='blue')
+                self.I(lambda: (a, b), overlay=False, color=('green', 'orange'))
 
             def next(self):
                 pass
@@ -837,20 +811,15 @@ class TestPlot(TestCase):
         bt = Backtest(GOOG, S)
         bt.run()
         with _tempfile() as f:
-            bt.plot(
-                filename=f,
-                plot_drawdown=False,
-                plot_equity=False,
-                plot_pl=False,
-                plot_volume=False,
-                open_browser=False,
-            )
+            bt.plot(filename=f,
+                    plot_drawdown=False, plot_equity=False, plot_pl=False, plot_volume=False,
+                    open_browser=False)
 
     def test_indicator_scatter(self):
         class S(Strategy):
             def init(self):
-                self.I(SMA, self.data.Close.s, 5, overlay=True, scatter=True)
-                self.I(SMA, self.data.Close.s, 10, overlay=False, scatter=True)
+                self.I(SMA, self.data.Close, 5, overlay=True, scatter=True)
+                self.I(SMA, self.data.Close, 10, overlay=False, scatter=True)
 
             def next(self):
                 pass
@@ -858,14 +827,9 @@ class TestPlot(TestCase):
         bt = Backtest(GOOG, S)
         bt.run()
         with _tempfile() as f:
-            bt.plot(
-                filename=f,
-                plot_drawdown=False,
-                plot_equity=False,
-                plot_pl=False,
-                plot_volume=False,
-                open_browser=False,
-            )
+            bt.plot(filename=f,
+                    plot_drawdown=False, plot_equity=False, plot_pl=False, plot_volume=False,
+                    open_browser=False)
 
 
 class TestLib(TestCase):
@@ -881,43 +845,44 @@ class TestLib(TestCase):
 
     def test_crossover(self):
         self.assertTrue(crossover([0, 1], [1, 0]))
-        self.assertTrue(crossover([0, 1], 0.5))
-        self.assertTrue(crossover([0, 1], pd.Series([0.5, 0.5], index=[5, 6])))
+        self.assertTrue(crossover([0, 1], .5))
+        self.assertTrue(crossover([0, 1], pd.Series([.5, .5], index=[5, 6])))
         self.assertFalse(crossover([1, 0], [1, 0]))
         self.assertFalse(crossover([0], [1]))
 
     def test_quantile(self):
-        self.assertEqual(quantile(np.r_[1, 3, 2], 0.5), 2)
-        self.assertEqual(quantile(np.r_[1, 3, 2]), 0.5)
+        self.assertEqual(quantile(np.r_[1, 3, 2], .5), 2)
+        self.assertEqual(quantile(np.r_[1, 3, 2]), .5)
 
     def test_resample_apply(self):
-        res = resample_apply("D", SMA, EURUSD.Close, 10)
-        self.assertEqual(res.name, "C[D]")
-        self.assertEqual(res.count() / res.size, 0.9634)
-        np.testing.assert_almost_equal(
-            res.iloc[-48:].unique().tolist(), [1.242643, 1.242381, 1.242275], decimal=6
-        )
+        res = resample_apply('D', SMA, EURUSD.Close, 10)
+        self.assertEqual(res.name, 'C[D]')
+        self.assertEqual(res.count() / res.size, .9634)
+        np.testing.assert_almost_equal(res.iloc[-48:].unique().tolist(),
+                                       [1.242643, 1.242381, 1.242275],
+                                       decimal=6)
 
         def resets_index(*args):
             return pd.Series(SMA(*args).values)
 
-        res2 = resample_apply("D", resets_index, EURUSD.Close, 10)
+        res2 = resample_apply('D', resets_index, EURUSD.Close, 10)
         self.assertTrue((res.dropna() == res2.dropna()).all())
         self.assertTrue((res.index == res2.index).all())
 
-        res3 = resample_apply("D", None, EURUSD)
-        self.assertIn("Volume", res3)
+        res3 = resample_apply('D', None, EURUSD)
+        self.assertIn('Volume', res3)
 
-        res3 = resample_apply("D", lambda df: (df.Close, df.Close), EURUSD)
+        res3 = resample_apply('D', lambda df: (df.Close, df.Close), EURUSD)
         self.assertIsInstance(res3, pd.DataFrame)
 
     def test_plot_heatmaps(self):
         bt = Backtest(GOOG, SmaCross)
-        stats, heatmap = bt.optimize(
-            fast=range(2, 7, 2), slow=range(7, 15, 2), return_heatmap=True
-        )
+        stats, heatmap = bt.optimize(fast=range(2, 7, 2),
+                                     slow=range(7, 15, 2),
+                                     return_heatmap=True)
         with _tempfile() as f:
-            for agg in ("mean", lambda x: np.percentile(x, 75)):
+            for agg in ('mean',
+                        lambda x: np.percentile(x, 75)):
                 plot_heatmaps(heatmap, agg, filename=f, open_browser=False)
 
             # Preview
@@ -934,14 +899,12 @@ class TestLib(TestCase):
     def test_compute_stats(self):
         stats = Backtest(GOOG, SmaCross).run()
         only_long_trades = stats._trades[stats._trades.Size > 0]
-        long_stats = compute_stats(
-            stats=stats, trades=only_long_trades, data=GOOG, risk_free_rate=0.02
-        )
-        self.assertNotEqual(
-            list(stats._equity_curve.Equity), list(long_stats._equity_curve.Equity)
-        )
-        self.assertNotEqual(stats["Sharpe Ratio"], long_stats["Sharpe Ratio"])
-        self.assertEqual(long_stats["# Trades"], len(only_long_trades))
+        long_stats = compute_stats(stats=stats, trades=only_long_trades,
+                                   data=GOOG, risk_free_rate=.02)
+        self.assertNotEqual(list(stats._equity_curve.Equity),
+                            list(long_stats._equity_curve.Equity))
+        self.assertNotEqual(stats['Sharpe Ratio'], long_stats['Sharpe Ratio'])
+        self.assertEqual(long_stats['# Trades'], len(only_long_trades))
         self.assertEqual(stats._strategy, long_stats._strategy)
         assert_frame_equal(long_stats._trades, only_long_trades)
 
@@ -949,10 +912,11 @@ class TestLib(TestCase):
         class S(SignalStrategy):
             def init(self):
                 sma = self.data.Close.s.rolling(10).mean()
-                self.set_signal(self.data.Close > sma, self.data.Close < sma)
+                self.set_signal(self.data.Close > sma,
+                                self.data.Close < sma)
 
         stats = Backtest(GOOG, S, fail_fast=False).run()
-        self.assertIn(stats["# Trades"], (1179, 1180))  # varies on different archs?
+        self.assertIn(stats['# Trades'], (1179, 1180))  # varies on different archs?
 
     def test_TrailingStrategy(self):
         class S(TrailingStrategy):
@@ -969,31 +933,24 @@ class TestLib(TestCase):
                     self.buy()
 
         stats = Backtest(GOOG, S).run()
-        self.assertEqual(stats["# Trades"], 56)
+        self.assertEqual(stats['# Trades'], 56)
 
     def test_FractionalBacktest(self):
-        ubtc_bt = FractionalBacktest(
-            BTCUSD["2015":], SmaCross, fractional_unit=1 / 1e6, cash=100
-        )
+        ubtc_bt = FractionalBacktest(BTCUSD['2015':], SmaCross, fractional_unit=1 / 1e6, cash=100)
         stats = ubtc_bt.run(fast=2, slow=3)
-        self.assertEqual(stats["# Trades"], 41)
-        trades = stats["_trades"]
+        self.assertEqual(stats['# Trades'], 41)
+        trades = stats['_trades']
         self.assertEqual(len(trades), 41)
         trade = trades.iloc[0]
-        self.assertAlmostEqual(trade["EntryPrice"], 236.69)
-        self.assertAlmostEqual(
-            stats["_strategy"]._indicators[0][trade["EntryBar"]], 234.14
-        )
+        self.assertAlmostEqual(trade['EntryPrice'], 236.69)
+        self.assertAlmostEqual(stats['_strategy']._indicators[0][trade['EntryBar']], 234.14)
 
     def test_MultiBacktest(self):
         import backtesting
-
-        assert callable(getattr(backtesting, "Pool", None)), backtesting.__dict__
+        assert callable(getattr(backtesting, 'Pool', None)), backtesting.__dict__
         for start_method in mp.get_all_start_methods():
-            with (
-                self.subTest(start_method=start_method),
-                patch(backtesting, "Pool", mp.get_context(start_method).Pool),
-            ):
+            with self.subTest(start_method=start_method), \
+                    patch(backtesting, 'Pool', mp.get_context(start_method).Pool):
                 start_time = time.monotonic()
                 btm = MultiBacktest([GOOG, EURUSD, BTCUSD], SmaCross, cash=100_000)
                 res = btm.run(fast=2)
@@ -1015,44 +972,41 @@ class TestUtil(TestCase):
             def __call__(self):
                 pass
 
-        self.assertEqual(_as_str("4"), "4")
-        self.assertEqual(_as_str(4), "4")
-        self.assertEqual(_as_str(_Indicator([1, 2], name="x")), "x")
-        self.assertEqual(_as_str(func), "func")
-        self.assertEqual(_as_str(Class), "Class")
-        self.assertEqual(_as_str(Class()), "Class")
-        self.assertEqual(_as_str(pd.Series([1, 2], name="x")), "x")
-        self.assertEqual(_as_str(pd.DataFrame()), "df")
-        self.assertEqual(_as_str(lambda x: x), "λ")
-        for s in ("Open", "High", "Low", "Close", "Volume"):
+        self.assertEqual(_as_str('4'), '4')
+        self.assertEqual(_as_str(4), '4')
+        self.assertEqual(_as_str(_Indicator([1, 2], name='x')), 'x')
+        self.assertEqual(_as_str(func), 'func')
+        self.assertEqual(_as_str(Class), 'Class')
+        self.assertEqual(_as_str(Class()), 'Class')
+        self.assertEqual(_as_str(pd.Series([1, 2], name='x')), 'x')
+        self.assertEqual(_as_str(pd.DataFrame()), 'df')
+        self.assertEqual(_as_str(lambda x: x), 'λ')
+        for s in ('Open', 'High', 'Low', 'Close', 'Volume'):
             self.assertEqual(_as_str(_Array([1], name=s)), s[0])
 
     def test_patch(self):
         class Object:
             pass
-
         o = Object()
         o.attr = False
-        with patch(o, "attr", True):
+        with patch(o, 'attr', True):
             self.assertTrue(o.attr)
         self.assertFalse(o.attr)
 
-    @unittest.skipUnless(False, "Because of the multi-asset dataframe, we dont really want to add a 'new-key' dynamically; a MultiLevel DataFrame cannot handle that")
+    # @unittest.skipUnless(False, "Because of the multi-asset dataframe, we dont really want to add a 'new-key' dynamically; a MultiLevel DataFrame cannot handle that")
     def test_pandas_accessors(self):
         class S(Strategy):
             def init(self):
                 close, index = self.data.Close, self.data.index
                 assert close.s.equals(pd.Series(close, index=index))
-                assert self.data.df["Close"].equals(pd.Series(close, index=index))
-                self.data.df["new_key"] = 2 * close
+                assert self.data.df['Close'].equals(pd.Series(close, index=index))
+                self.data.df['new_key'] = 2 * close
 
             def next(self):
                 close, index = self.data.Close, self.data.index
                 assert close.s.equals(pd.Series(close, index=index))
-                assert self.data.df["Close"].equals(pd.Series(close, index=index))
-                assert self.data.df["new_key"].equals(
-                    pd.Series(self.data.new_key, index=index)
-                )
+                assert self.data.df['Close'].equals(pd.Series(close, index=index))
+                assert self.data.df['new_key'].equals(pd.Series(self.data.new_key, index=index))
 
         Backtest(GOOG.iloc[:20], S).run()
 
@@ -1060,18 +1014,16 @@ class TestUtil(TestCase):
         bt = Backtest(SHORT_DATA, SmaCross)
         with ProcessPoolExecutor() as executor:
             stats = executor.submit(Backtest.run, bt).result()
-        assert stats._strategy._indicators[
-            0
-        ]._opts, "._opts and .name were not unpickled"
-        bt.plot(results=stats, resample="2d", open_browser=False)
+        assert stats._strategy._indicators[0]._opts, '._opts and .name were not unpickled'
+        bt.plot(results=stats, resample='2d', open_browser=False)
 
 
 class TestDocs(TestCase):
-    DOCS_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "doc")
+    DOCS_DIR = os.path.join(os.path.dirname(__file__), '..', '..', 'doc')
 
     @unittest.skipUnless(os.path.isdir(DOCS_DIR), "docs dir doesn't exist")
     def test_examples(self):
-        examples = glob(os.path.join(self.DOCS_DIR, "examples", "*.py"))
+        examples = glob(os.path.join(self.DOCS_DIR, 'examples', '*.py'))
         self.assertGreaterEqual(len(examples), 4)
         with chdir(gettempdir()):
             for file in examples:
@@ -1084,9 +1036,8 @@ class TestDocs(TestCase):
             self.assertIn(key, Backtest.run.__doc__)
 
     def test_readme_contains_stats_keys(self):
-        with open(
-            os.path.join(os.path.dirname(__file__), "..", "..", "README.md")
-        ) as f:
+        with open(os.path.join(os.path.dirname(__file__),
+                               '..', '..', 'README.md')) as f:
             readme = f.read()
         stats = Backtest(SHORT_DATA, SmaCross).run()
         for key in stats.index:
@@ -1101,15 +1052,15 @@ class TestRegressions(TestCase):
                     self.buy(size=1, sl=90)
 
         arr = np.r_[100, 100, 100, 50, 50]
-        df = pd.DataFrame({"Open": arr, "High": arr, "Low": arr, "Close": arr})
-        with self.assertWarnsRegex(UserWarning, "index is not datetime"):
-            bt = Backtest(df, S, cash=100, fail_fast=False, trade_on_close=True)
-        self.assertEqual(bt.run()._trades["ExitPrice"][0], 50)
+        df = pd.DataFrame({'Open': arr, 'High': arr, 'Low': arr, 'Close': arr})
+        with self.assertWarnsRegex(UserWarning, 'index is not datetime'):
+            bt = Backtest(df, S, cash=100, trade_on_close=True)
+        self.assertEqual(bt.run()._trades['ExitPrice'][0], 50)
 
     def test_stats_annualized(self):
-        stats = Backtest(GOOG.resample("W").agg(OHLCV_AGG), SmaCross).run()
-        self.assertFalse(np.isnan(stats["Return (Ann.) [%]"]))
-        self.assertEqual(round(stats["Return (Ann.) [%]"]), -3)
+        stats = Backtest(GOOG.resample('W').agg(OHLCV_AGG), SmaCross).run()
+        self.assertFalse(np.isnan(stats['Return (Ann.) [%]']))
+        self.assertEqual(round(stats['Return (Ann.) [%]']), -3)
 
     def test_cancel_orders(self):
         class S(_S):
@@ -1130,45 +1081,38 @@ class TestRegressions(TestCase):
             yield
 
         arr = np.r_[100, 101, 102, 50, 51]
-        df = pd.DataFrame({"Open": arr - 10, "Close": arr, "High": arr, "Low": arr})
-        with self.assertWarnsRegex(UserWarning, "index is not datetime"):
-            trades = (
-                TestStrategy._Backtest(coro, df, cash=250, trade_on_close=True)
-                .run()
-                ._trades
-            )
+        df = pd.DataFrame({
+            'Open': arr - 10,
+            'Close': arr, 'High': arr, 'Low': arr})
+        with self.assertWarnsRegex(UserWarning, 'index is not datetime'):
+            trades = TestStrategy._Backtest(coro, df, cash=250, trade_on_close=True).run()._trades
             # trades = Backtest(df, S, cash=250, trade_on_close=True).run()._trades
-            self.assertEqual(trades["EntryBar"][0], 1)
-            self.assertEqual(trades["ExitBar"][0], 2)
-            self.assertEqual(trades["EntryPrice"][0], 101)
-            self.assertEqual(trades["ExitPrice"][0], 102)
-            self.assertEqual(trades["EntryBar"][1], 1)
-            self.assertEqual(trades["ExitBar"][1], 3)
-            self.assertEqual(trades["EntryPrice"][1], 101)
-            self.assertEqual(trades["ExitPrice"][1], 40)
+            self.assertEqual(trades['EntryBar'][0], 1)
+            self.assertEqual(trades['ExitBar'][0], 2)
+            self.assertEqual(trades['EntryPrice'][0], 101)
+            self.assertEqual(trades['ExitPrice'][0], 102)
+            self.assertEqual(trades['EntryBar'][1], 1)
+            self.assertEqual(trades['ExitBar'][1], 3)
+            self.assertEqual(trades['EntryPrice'][1], 101)
+            self.assertEqual(trades['ExitPrice'][1], 40)
 
-        with self.assertWarnsRegex(UserWarning, "index is not datetime"):
-            trades = (
-                TestStrategy._Backtest(coro, df, cash=250, trade_on_close=False)
-                .run()
-                ._trades
-            )
+        with self.assertWarnsRegex(UserWarning, 'index is not datetime'):
+            trades = TestStrategy._Backtest(coro, df, cash=250, trade_on_close=False).run()._trades
             # trades = Backtest(df, S, cash=250, trade_on_close=False).run()._trades
-            self.assertEqual(trades["EntryBar"][0], 2)
-            self.assertEqual(trades["ExitBar"][0], 3)
-            self.assertEqual(trades["EntryPrice"][0], 92)
-            self.assertEqual(trades["ExitPrice"][0], 40)
-            self.assertEqual(trades["EntryBar"][1], 2)
-            self.assertEqual(trades["ExitBar"][1], 3)
-            self.assertEqual(trades["EntryPrice"][1], 92)
-            self.assertEqual(trades["ExitPrice"][1], 40)
+            self.assertEqual(trades['EntryBar'][0], 2)
+            self.assertEqual(trades['ExitBar'][0], 3)
+            self.assertEqual(trades['EntryPrice'][0], 92)
+            self.assertEqual(trades['ExitPrice'][0], 40)
+            self.assertEqual(trades['EntryBar'][1], 2)
+            self.assertEqual(trades['ExitBar'][1], 3)
+            self.assertEqual(trades['EntryPrice'][1], 92)
+            self.assertEqual(trades['ExitPrice'][1], 40)
 
     def test_trades_dates_match_prices(self):
         bt = Backtest(EURUSD, SmaCross, trade_on_close=True)
         trades = bt.run()._trades
-        self.assertEqual(
-            EURUSD.Close[trades["ExitTime"]].tolist(), trades["ExitPrice"].tolist()
-        )
+        self.assertEqual(EURUSD.Close[trades['ExitTime']].tolist(),
+                         trades['ExitPrice'].tolist())
 
     def test_sl_always_before_tp(self):
         class S(_S):
@@ -1182,7 +1126,7 @@ class TestRegressions(TestCase):
                     t.tp = 107.9
 
         trades = Backtest(SHORT_DATA, S).run()._trades
-        self.assertEqual(trades["ExitPrice"].iloc[0], 104.95)
+        self.assertEqual(trades['ExitPrice'].iloc[0], 104.95)
 
     def test_stop_entry_and_tp_in_same_bar(self):
         class S(_S):
@@ -1192,14 +1136,14 @@ class TestRegressions(TestCase):
                     self.sell(stop=108, tp=105, sl=113)
 
         trades = Backtest(SHORT_DATA, S).run()._trades
-        self.assertEqual(trades["ExitBar"].iloc[0], 3)
-        self.assertEqual(trades["ExitPrice"].iloc[0], 105)
+        self.assertEqual(trades['ExitBar'].iloc[0], 3)
+        self.assertEqual(trades['ExitPrice'].iloc[0], 105)
 
     def test_optimize_datetime_index_with_timezone(self):
         data: pd.DataFrame = GOOG.iloc[:100]
-        data.index = data.index.tz_localize("Asia/Kolkata")
+        data.index = data.index.tz_localize('Asia/Kolkata')
         res = Backtest(data, SmaCross).optimize(fast=range(2, 3), slow=range(4, 5))
-        self.assertGreater(res["# Trades"], 0)
+        self.assertGreater(res['# Trades'], 0)
 
 
 # Create a multi-asset dataframe from the imported GOOG and SPY data
