@@ -2411,22 +2411,28 @@ test = ["hypothesis (>=6.46.1)", "pytest (>=7.3.2)", "pytest-xdist (>=2.2.0)"]
 xml = ["lxml (>=4.9.2)"]
 
 [[package]]
-name = "pandas-ta"
-version = "0.3.14b"
+name = "pandas_ta"
+version = "0.3.14b0"
 description = "An easy to use Python 3 Pandas Extension with 130+ Technical Analysis Indicators. Can be called from a Pandas DataFrame or standalone like TA-Lib. Correlation tested with TA-Lib."
 optional = false
 python-versions = "*"
 groups = ["main"]
-files = [
-    {file = "pandas_ta-0.3.14b.tar.gz", hash = "sha256:0fa35aec831d2815ea30b871688a8d20a76b288a7be2d26cc00c35cd8c09a993"},
-]
+files = []
+develop = false
 
 [package.dependencies]
+numpy = "2.2.3"
 pandas = "*"
 
 [package.extras]
 dev = ["alphaVantage-api", "matplotlib", "mplfinance", "scipy", "sklearn", "statsmodels", "stochastic", "talib", "tqdm", "vectorbt", "yfinance"]
 test = ["ta-lib"]
+
+[package.source]
+type = "git"
+url = "https://github.com/huynle/pandas-ta.git"
+reference = "main"
+resolved_reference = "63cabc17405a73756455c4bff9ad04bd3510329a"
 
 [[package]]
 name = "pandocfilters"
@@ -3963,4 +3969,4 @@ files = [
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.13"
-content-hash = "6f2f49d5c2de4f0f41ec0d17d96939df01aa5b70cb080bfae76fa9eb2c351a24"
+content-hash = "f48400795e31eed9c89453ff5d0a78f6949594d508894ab447a275487ad8199a"

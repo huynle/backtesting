@@ -1143,6 +1143,25 @@ class TestRegressions(TestCase):
         self.assertGreater(res['# Trades'], 0)
 
 
+    def test_ta_lib(self):
+        """integrated TA lib in a dataframe
+        """
+        class S(Strategy):
+            def init(self):
+                self.I(self.data.df.ta.macd)
+
+            def next(self):
+                pass
+
+        bt = Backtest(GOOG, S)
+        bt.run()
+        with _tempfile() as f:
+            bt.plot(filename=f,
+                    plot_drawdown=False, plot_equity=False, plot_pl=False, plot_volume=False,
+                    open_browser=False)
+
+
+
 # Create a multi-asset dataframe from the imported GOOG and SPY data
 MULTI_ASSET_DATA = pd.DataFrame({
     ("GOOG", "Open"): GOOG["Open"],
@@ -1183,8 +1202,10 @@ def calculate_ema(data, period, smoothing=2):
     
     return ema
 
+    
 
 class TestBacktestMulti(object):
+
     def test_multi_asset_run(self):
         class MultiAssetStrategy(Strategy):
             """
