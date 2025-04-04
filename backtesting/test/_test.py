@@ -743,7 +743,7 @@ class TestPlot(TestCase):
             # Give browser time to open before tempfile is removed
             time.sleep(5)
 
-    @unittest.skipUnless(False, "doesnt work for now")
+    # @unittest.skipUnless(False, "doesnt work for now")
     def test_resolutions(self):
         with _tempfile() as f:
             for rule in "ms s min h D W ME".split():

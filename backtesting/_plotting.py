@@ -1,33 +1,37 @@
+from __future__ import annotations
+
 import os
 import re
 import sys
 import warnings
 from colorsys import hls_to_rgb, rgb_to_hls
+from itertools import cycle, combinations
 from functools import partial
-from itertools import combinations, cycle
-from typing import Callable, Dict, List, Union
+from typing import Callable, List, Union
 
 import numpy as np
 import pandas as pd
+
 from bokeh.colors import RGB
-from bokeh.colors.named import lime as BULL_COLOR
-from bokeh.colors.named import tomato as BEAR_COLOR
+from bokeh.colors.named import (
+    lime as BULL_COLOR,
+    tomato as BEAR_COLOR
+)
 from bokeh.events import DocumentReady
-from bokeh.models import (
-    ColumnDataSource,
+from bokeh.plotting import figure as _figure
+from bokeh.models import (  # type: ignore
     CrosshairTool,
     CustomJS,
-    DatetimeTickFormatter,
-    HoverTool,
+    ColumnDataSource,
     Legend,
-    LinearColorMapper,
     NumeralTickFormatter,
-    Range1d,
     Span,
+    HoverTool,
+    Range1d,
+    DatetimeTickFormatter,
     WheelZoomTool,
+    LinearColorMapper,
 )
-from bokeh.plotting import figure as _figure
-
 try:
     from bokeh.models import CustomJSTickFormatter
 except ImportError:  # Bokeh < 3.0
@@ -38,23 +42,21 @@ from bokeh.layouts import gridplot
 from bokeh.palettes import Category10
 from bokeh.transform import factor_cmap
 
-from backtesting._util import _Indicator, _as_list, _data_period, try_
+from backtesting._util import _data_period, _as_list, _Indicator, try_
 
-with open(os.path.join(os.path.dirname(__file__), "autoscale_cb.js"), encoding="utf-8") as _f:
+with open(os.path.join(os.path.dirname(__file__), 'autoscale_cb.js'),
+          encoding='utf-8') as _f:
     _AUTOSCALE_JS_CALLBACK = _f.read()
 
-IS_JUPYTER_NOTEBOOK = (
-    "JPY_PARENT_PID" in os.environ or "inline" in os.environ.get("MPLBACKEND", "")
-)
+IS_JUPYTER_NOTEBOOK = ('JPY_PARENT_PID' in os.environ or
+                       'inline' in os.environ.get('MPLBACKEND', ''))
 
 if IS_JUPYTER_NOTEBOOK:
-    warnings.warn(
-        "Jupyter Notebook detected. "
-        "Setting Bokeh output to notebook. "
-        "This may not work in Jupyter clients without JavaScript "
-        "support, such as old IDEs. "
-        "Reset with `backtesting.set_bokeh_output(notebook=False)`."
-    )
+    warnings.warn('Jupyter Notebook detected. '
+                  'Setting Bokeh output to notebook. '
+                  'This may not work in Jupyter clients without JavaScript '
+                  'support, such as old IDEs. '
+                  'Reset with `backtesting.set_bokeh_output(notebook=False)`.')
     output_notebook()
 
 
@@ -68,17 +70,17 @@ def set_bokeh_output(notebook=False):
     IS_JUPYTER_NOTEBOOK = notebook
 
 
-def _windows_safe_filename(filename):
-    if sys.platform.startswith("win"):
-        return re.sub(r"[^a-zA-Z0-9,_-]", "_", filename.replace("=", "-"))
+def _windos_safe_filename(filename):
+    if sys.platform.startswith('win'):
+        return re.sub(r'[^a-zA-Z0-9,_-]', '_', filename.replace('=', '-'))
     return filename
 
 
 def _bokeh_reset(filename=None):
     curstate().reset()
     if filename:
-        if not filename.endswith(".html"):
-            filename += ".html"
+        if not filename.endswith('.html'):
+            filename += '.html'
         output_file(filename, title=filename)
     elif IS_JUPYTER_NOTEBOOK:
         curstate().output_notebook()
@@ -86,19 +88,22 @@ def _bokeh_reset(filename=None):
 
 
 def _add_popcon():
-    curdoc().js_on_event(
-        DocumentReady,
-        CustomJS(
-            code="""(function() { var i = document.createElement('iframe'); i.style.display='none';i.width=i.height=1;i.loading='eager';i.src='https://kernc.github.io/backtesting.py/plx.gif.html?utm_source='+location.origin;document.body.appendChild(i);})();"""
-        ),
-    )  # noqa: E501
+    curdoc().js_on_event(DocumentReady, CustomJS(code='''(function() { var i = document.createElement('iframe'); i.style.display='none';i.width=i.height=1;i.loading='eager';i.src='https://kernc.github.io/backtesting.py/plx.gif.html?utm_source='+location.origin;document.body.appendChild(i);})();'''))  # noqa: E501
+
+
+def _watermark(fig: _figure):
+    fig.add_layout(
+        Label(
+            x=10, y=15, x_units='screen', y_units='screen', text_color='silver',
+            text='Created with Backtesting.py: http://kernc.github.io/backtesting.py',
+            text_alpha=.09))
 
 
 def colorgen():
     yield from cycle(Category10[10])
 
 
-def lightness(color, lightness=0.94):
+def lightness(color, lightness=.94):
     rgb = np.array([color.r, color.g, color.b]) / 255
     h, _, s = rgb_to_hls(*rgb)
     rgb = (np.array(hls_to_rgb(h, lightness, s)) * 255).astype(int)
@@ -109,47 +114,41 @@ _MAX_CANDLES = 10_000
 _INDICATOR_HEIGHT = 50
 
 
-def _maybe_resample_data(
-    resample_rule, data, baseline, indicators, equity_data, trades, bnh_perf
-):
+def _maybe_resample_data(resample_rule, data, df, indicators, equity_data, trades, bnh_perf):
     if isinstance(resample_rule, str):
         freq = resample_rule
     else:
-        if resample_rule is False or len(baseline) <= _MAX_CANDLES:
-            return data, baseline, indicators, equity_data, trades, bnh_perf
+        if resample_rule is False or len(df) <= _MAX_CANDLES:
+            return data, df, indicators, equity_data, trades, bnh_perf
 
-        freq_minutes = pd.Series(
-            {
-                "1T": 1,
-                "5T": 5,
-                "10T": 10,
-                "15T": 15,
-                "30T": 30,
-                "1H": 60,
-                "2H": 60 * 2,
-                "4H": 60 * 4,
-                "8H": 60 * 8,
-                "1D": 60 * 24,
-                "1W": 60 * 24 * 7,
-                "1M": np.inf,
-            }
-        )
-        timespan = baseline.index[-1] - baseline.index[0]
+        freq_minutes = pd.Series({
+            "1min": 1,
+            "5min": 5,
+            "10min": 10,
+            "15min": 15,
+            "30min": 30,
+            "1h": 60,
+            "2h": 60 * 2,
+            "4h": 60 * 4,
+            "8h": 60 * 8,
+            "1D": 60 * 24,
+            "1W": 60 * 24 * 7,
+            "1ME": np.inf,
+        })
+        timespan = df.index[-1] - df.index[0]
         require_minutes = (timespan / _MAX_CANDLES).total_seconds() // 60
         freq = freq_minutes.where(freq_minutes >= require_minutes).first_valid_index()
-        warnings.warn(
-            f"Data contains too many candlesticks to plot; downsampling to {freq!r}. "
-            "See `Backtest.plot(resample=...)`"
-        )
+        warnings.warn(f"Data contains too many candlesticks to plot; downsampling to {freq!r}. "
+                      "See `Backtest.plot(resample=...)`")
 
-    from .lib import _EQUITY_AGG, OHLCV_AGG, TRADES_AGG
+    from .lib import OHLCV_AGG, TRADES_AGG, _EQUITY_AGG
 
     data = (
         data.ta.apply(lambda s: s.resample(freq, label="right").agg(OHLCV_AGG))
         .dropna()
     )
 
-    baseline = baseline.resample(freq, label="right").agg(OHLCV_AGG).dropna()
+    df = df.resample(freq, label="right").agg(OHLCV_AGG).dropna()
 
     def try_mean_first(indicator):
         nonlocal freq
@@ -173,7 +172,7 @@ def _maybe_resample_data(
     equity_data = (
         equity_data.resample(freq, label="right").agg(column_agg).dropna(how="all")
     )
-    assert equity_data.index.equals(baseline.index)
+    assert equity_data.index.equals(df.index)
 
     def _weighted_returns(s, trades=trades):
         df = trades.loc[s.index]
@@ -183,34 +182,26 @@ def _maybe_resample_data(
         return ((df["Size"].abs() * df["ReturnPct"]) / denom).sum()
 
     def _group_trades(column):
-        def f(s, new_index=pd.Index(baseline.index.view(int)), bars=trades[column]):
+        def f(s, new_index=pd.Index(df.index.astype(np.int64)), bars=trades[column]):
             if s.size:
                 # Via int64 because on pandas recently broken datetime
-                mean_time = int(bars.loc[s.index].astype(int).mean())
-                new_bar_idx = new_index.get_indexer([mean_time], method="nearest")[0]
+                mean_time = int(bars.loc[s.index].astype(np.int64).mean())
+                new_bar_idx = new_index.get_indexer([mean_time], method='nearest')[0]
                 return new_bar_idx
-
         return f
 
     if len(trades):  # Avoid pandas "resampling on Int64 index" error
-        trades = (
-            trades.assign(count=1)
-            .resample(freq, on="ExitTime", label="right")
-            .agg(
-                dict(
+        trades = trades.assign(count=1).resample(freq, on='ExitTime', label='right').agg(dict(
                     TRADES_AGG,
                     ReturnPct=_weighted_returns,
-                    count="sum",
-                    EntryBar=_group_trades("EntryTime"),
-                    ExitBar=_group_trades("ExitTime"),
-                )
-            )
-            .dropna()
-        )
+                    count='sum',
+                    EntryBar=_group_trades('EntryTime'),
+                    ExitBar=_group_trades('ExitTime'),
+                )).dropna()
 
     bnh_perf = bnh_perf.resample(freq, label="right").last().dropna()
 
-    return data, baseline, indicators, equity_data, trades, bnh_perf
+    return data, df, indicators, equity_data, trades, bnh_perf
 
 
 def plot(
@@ -219,21 +210,14 @@ def plot(
     data: pd.DataFrame,
     df: pd.DataFrame,
     indicators: List[Union[pd.DataFrame, pd.Series]],
-    filename="",
-    plot_width=None,
+    filename='', plot_width=None, plot_pl=True,
+    plot_volume=False, plot_drawdown=False, plot_trades=True,
+    smooth_equity=False, relative_equity=True,
+    superimpose=False, resample=True,
+    reverse_indicators=True,
+    show_legend=True, open_browser=True,
     plot_equity=True,
     plot_return=False,
-    plot_pl=True,
-    plot_volume=False,
-    plot_drawdown=False,
-    plot_trades=True,
-    smooth_equity=False,
-    relative_equity=True,
-    superimpose=False,
-    resample=True,
-    reverse_indicators=True,
-    show_legend=True,
-    open_browser=True,
     plot_allocation=False,
     relative_allocation=True,
     plot_indicator=True,
@@ -245,15 +229,15 @@ def plot(
     # plot() contain some previous run's cruft data (was noticed when
     # TestPlot.test_file_size() test was failing).
     if not filename and not IS_JUPYTER_NOTEBOOK:
-        filename = _windows_safe_filename(str(results._strategy))
+        filename = _windos_safe_filename(str(results._strategy))
     _bokeh_reset(filename)
 
     COLORS = [BEAR_COLOR, BULL_COLOR]
-    BAR_WIDTH = 0.8
+    BAR_WIDTH = .8
 
-    assert df.index.equals(results["_equity_curve"].index)
-    equity_data = results["_equity_curve"].copy(deep=False)
-    trades = results["_trades"]
+    assert df.index.equals(results['_equity_curve'].index)
+    equity_data = results['_equity_curve'].copy(deep=False)
+    trades = results['_trades']
 
     plot_volume = plot_volume and not df.Volume.isnull().all()
     plot_equity = plot_equity and not trades.empty
@@ -275,79 +259,65 @@ def plot(
 
     # Limit data to max_candles
     if is_datetime_index:
-        data, df, indicators, equity_data, trades, bnh_perf = (
-            _maybe_resample_data(
-                resample, data, df, indicators, equity_data, trades, bnh_perf
-            )
-        )
+        data, df, indicators, equity_data, trades, bnh_perf = _maybe_resample_data(
+            resample, data, df, indicators, equity_data, trades, bnh_perf)
 
     df.index.name = None  # Provides source name @index
-    df["datetime"] = df.index  # Save original, maybe datetime index
+    df['datetime'] = df.index  # Save original, maybe datetime index
     df = df.reset_index(drop=True)
     equity_data = equity_data.reset_index(drop=True)
     index = df.index
 
-    new_bokeh_figure = partial(
+    new_bokeh_figure = partial(  # type: ignore[call-arg]
         _figure,
-        x_axis_type="linear",
+        x_axis_type='linear',
         width=plot_width,
         height=400,
-        tools="xpan,xwheel_zoom,box_zoom,undo,redo,reset,save",
-        active_drag="xpan",
-        active_scroll="xwheel_zoom",
-    )
+        # TODO: xwheel_pan on horizontal after https://github.com/bokeh/bokeh/issues/14363
+        tools="xpan,xwheel_zoom,xwheel_pan,box_zoom,undo,redo,reset,save",
+        active_drag='xpan',
+        active_scroll='xwheel_zoom')
 
     pad = (index[-1] - index[0]) / 20
 
-    _kwargs = (
-        dict(
-            x_range=Range1d(
-                index[0],
-                index[-1],
+    _kwargs = dict(x_range=Range1d(index[0], index[-1],  # type: ignore[call-arg]
                 min_interval=10,
-                bounds=(index[0] - pad, index[-1] + pad),
-            )
-        )
-        if index.size > 1
-        else {}
-    )
-    fig_ohlc = new_bokeh_figure(**_kwargs)
+                bounds=(index[0] - pad,
+                        index[-1] + pad))) if index.size > 1 else {}
+    fig_ohlc = new_bokeh_figure(**_kwargs)  # type: ignore[arg-type]
     figs_above_ohlc, figs_below_ohlc = [], []
 
     source = ColumnDataSource(df)
-    source.add((df.Close >= df.Open).values.astype(np.uint8).astype(str), "inc")
+    source.add((df.Close >= df.Open).values.astype(np.uint8).astype(str), 'inc')
     source.add(bnh_perf, "bnh_perf")
 
-    trade_source_data = dict(
+    trade_source = ColumnDataSource(dict(
         index=trades["ExitBar"] if not trades.empty else [],
         datetime=trades["ExitTime"] if not trades.empty else [],
         exit_price=trades["ExitPrice"] if not trades.empty else [],
         ticker=trades["Ticker"] if not trades.empty else [],
         size=trades["Size"] if not trades.empty else [],
         returns_positive=(trades["ReturnPct"] > 0).astype(int).astype(str) if not trades.empty else [],
-    )
-    trade_source = ColumnDataSource(trade_source_data)
+    ))
 
-
-    inc_cmap = factor_cmap("inc", COLORS, ["0", "1"])
-    cmap = factor_cmap("returns_positive", COLORS, ["0", "1"])
-    colors_darker = [lightness(BEAR_COLOR, 0.35), lightness(BULL_COLOR, 0.35)]
-    trades_cmap = factor_cmap("returns_positive", colors_darker, ["0", "1"])
+    inc_cmap = factor_cmap('inc', COLORS, ['0', '1'])
+    cmap = factor_cmap('returns_positive', COLORS, ['0', '1'])
+    colors_darker = [lightness(BEAR_COLOR, .35),
+                     lightness(BULL_COLOR, .35)]
+    trades_cmap = factor_cmap('returns_positive', colors_darker, ['0', '1'])
 
     if is_datetime_index:
-        fig_ohlc.xaxis.formatter = CustomJSTickFormatter(
-            args=dict(
-                axis=fig_ohlc.xaxis[0],
-                formatter=DatetimeTickFormatter(days="%a, %d %b", months="%m/%Y"),
-                source=source,
-            ),
-            code="""
+        fig_ohlc.xaxis.formatter = CustomJSTickFormatter(  # type: ignore[attr-defined]
+            args=dict(axis=fig_ohlc.xaxis[0],
+                      formatter=DatetimeTickFormatter(days='%a, %d %b',
+                                                      months='%m/%Y'),
+                source=source),
+            code='''
 this.labels = this.labels || formatter.doFormat(ticks
                                                 .map(i => source.data.datetime[i])
                                                 .filter(t => t !== undefined));
 return this.labels[index] || "";
-        """,
-        )
+        ''')
 
     NBSP = "\N{NBSP}" * 4  # noqa: E999
     ohlc_extreme_values = df[["High", "Low"]].copy(deep=False)
@@ -1039,7 +1009,7 @@ def plot_heatmaps(
             "`Backtest.optimize(..., return_heatmap=True)`"
         )
 
-    _bokeh_reset(_windows_safe_filename(filename) if filename else None)
+    _bokeh_reset(_windos_safe_filename(filename) if filename else None)
 
 
     param_combinations = combinations(heatmap.index.names, 2)
