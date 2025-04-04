@@ -129,7 +129,6 @@ class TestBacktest(TestCase):
         with self.assertRaises(ValueError):
             Backtest(GOOG.iloc[:0], SmaCross).run()
 
-    @unittest.skipUnless(False, "doesnt work for now")
     def test_assertions(self):
         class Assertive(Strategy):
             def init(self):

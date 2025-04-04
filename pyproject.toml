@@ -70,5 +70,5 @@ ignore = ["E501"]
 
 
 [tool.ruff.format]
-quote-style = "single"  # Preserves single quotes instead of converting to double quotes
+quote-style = "preserve"  # Preserves single quotes instead of converting to double quotes
 line-ending = "preserve"  # Keeps your existing line endings
