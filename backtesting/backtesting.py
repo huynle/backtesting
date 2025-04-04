@@ -11,6 +11,7 @@ from __future__ import annotations
 import functools
 import sys
 import warnings
+import traceback
 from abc import ABC, abstractmethod
 from copy import copy
 from datetime import datetime
@@ -2758,3 +2759,14 @@ class Backtest:
             plot_allocation=plot_allocation,
             relative_allocation=relative_allocation,
             plot_indicator=plot_indicator)
+
+
+# NOTE: Don't put anything public below this __all__ list
+
+__all__ = [getattr(v, '__name__', k)
+           for k, v in globals().items()                        # export
+           if ((callable(v) and getattr(v, '__module__', None) == __name__ or  # callables from this module; getattr for Python 3.9; # noqa: E501
+                k.isupper()) and                                # or CONSTANTS
+               not getattr(v, '__name__', k).startswith('_'))]  # neither marked internal
+
+# NOTE: Don't put anything public below here. See above.

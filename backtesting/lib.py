@@ -13,7 +13,6 @@ Please raise ideas for additions to this collection on the [issue tracker].
 
 from __future__ import annotations
 
-import multiprocessing as mp
 import warnings
 from collections import OrderedDict
 from inspect import currentframe
@@ -127,22 +126,25 @@ def plot_heatmaps(heatmap: pd.Series,
                   open_browser: bool = True):
     """
     Plots a grid of heatmaps, one for every pair of parameters in `heatmap`.
+    See example in [the tutorial].
+
+    [the tutorial]: https://kernc.github.io/backtesting.py/doc/examples/Parameter%20Heatmap%20&%20Optimization.html#plot-heatmap  # noqa: E501
 
     `heatmap` is a Series as returned by
     `backtesting.backtesting.Backtest.optimize` when its parameter
     `return_heatmap=True`.
 
-    When projecting the n-dimensional heatmap onto 2D, the values are
+    When projecting the n-dimensional (n > 2) heatmap onto 2D, the values are
     aggregated by 'max' function by default. This can be tweaked
     with `agg` parameter, which accepts any argument pandas knows
     how to aggregate by.
 
     .. todo::
         Lay heatmaps out lower-triangular instead of in a simple grid.
-        Like [`skopt.plots.plot_objective()`][plot_objective] does.
+        Like [`sambo.plot.plot_objective()`][plot_objective] does.
 
     [plot_objective]: \
-        https://scikit-optimize.github.io/stable/modules/plots.html#plot-objective
+        https://sambo-optimization.github.io/doc/sambo/plot.html#sambo.plot.plot_objective
     """
     return _plot_heatmaps(heatmap, agg, ncols, filename, plot_width, open_browser)
 
@@ -206,7 +208,7 @@ def compute_stats(
 
 def resample_apply(rule: str,
                    func: Optional[Callable[..., Sequence]],
-                   series: Union[pd.Series, pd.DataFrame],
+                   series: Union[pd.Series, pd.DataFrame, _Array],
                    *args,
                    agg: Optional[Union[str, dict]] = None,
                    **kwargs):
@@ -274,7 +276,7 @@ http://pandas.pydata.org/pandas-docs/stable/timeseries.html#offset-aliases
                 # We make a separate function that returns the final
                 # indicator array.
                 def SMA(series, n):
-                    backtestinging.test import SMA
+                    from backtesting.test import SMA
                     return SMA(series, n).reindex(close.index).ffill()
 
                 # The result equivalent to the short example above:
@@ -348,7 +350,7 @@ def random_ohlc_data(example_data: pd.DataFrame, *,
     Such random data can be effectively used for stress testing trading
     strategy robustness, Monte Carlo simulations, significance testing, etc.
 
-    >>> backtestinging.test import EURUSD
+    >>> from backtesting.test import EURUSD
     >>> ohlc_generator = random_ohlc_data(EURUSD)
     >>> next(ohlc_generator)  # returns new random data
     ...
@@ -475,7 +477,7 @@ class TrailingStrategy(Strategy):
 
     def set_trailing_sl(self, n_atr: float = 6):
         """
-        Sets the future trailing stop-loss as some multiple (`n_atr`)
+        Set the future trailing stop-loss as some multiple (`n_atr`)
         average true bar ranges away from the current price.
         """
         self.__n_atr = n_atr
@@ -539,18 +541,6 @@ class FractionalBacktest(Backtest):
         super().__init__(data, *args, **kwargs)
 
     def run(self, **kwargs) -> pd.Series:
-        """
-        Run the backtest with fractional units.
-        
-        This method overrides the parent's run method to handle fractional trading by:
-        1. Scaling price data (Open, High, Low, Close) up by the fractional unit
-        2. Scaling volume down by the fractional unit
-        3. Running the backtest with the scaled data
-        4. Adjusting the resulting trades and indicators back to their original scale
-        
-        Returns:
-            pd.Series: Results and statistics from the backtest
-        """
         data = self._data.copy()
         
         # Handle multi-level dataframe (multiple assets)
@@ -566,7 +556,6 @@ class FractionalBacktest(Backtest):
             # Original single-asset case
             data[['Open', 'High', 'Low', 'Close']] *= self._fractional_unit
             data['Volume'] /= self._fractional_unit
-        
         with patch(self, '_data', data):
             result = super().run(**kwargs)
 
@@ -581,7 +570,6 @@ class FractionalBacktest(Backtest):
 
         return result
     
-
 
 # Prevent pdoc3 documenting __init__ signature of Strategy subclasses
 for cls in list(globals().values()):
