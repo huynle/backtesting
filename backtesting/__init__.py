@@ -67,7 +67,7 @@ except ImportError:
 
 from . import lib  # noqa: F401
 from ._plotting import set_bokeh_output  # noqa: F401
-from .backtesting import Backtest, Strategy  # noqa: F401
+from .backtesting import Backtest, Strategy, Allocation # noqa: F401
 
 
 # Add overridable backtesting.Pool used for parallel optimization

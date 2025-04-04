@@ -3499,7 +3499,7 @@ version = "78.1.0"
 description = "Easily download, build, install, upgrade, and uninstall Python packages"
 optional = false
 python-versions = ">=3.9"
-groups = ["main", "dev"]
+groups = ["dev"]
 files = [
     {file = "setuptools-78.1.0-py3-none-any.whl", hash = "sha256:3e386e96793c8702ae83d17b853fb93d3e09ef82ec62722e61da5cd22376dcd8"},
     {file = "setuptools-78.1.0.tar.gz", hash = "sha256:18fd474d4a82a5f83dac888df697af65afa82dec7323d09c3e37d1f14288da54"},
@@ -3581,21 +3581,6 @@ pure-eval = "*"
 
 [package.extras]
 tests = ["cython", "littleutils", "pygments", "pytest", "typeguard"]
-
-[[package]]
-name = "ta-lib"
-version = "0.6.3"
-description = "Python wrapper for TA-Lib"
-optional = false
-python-versions = "*"
-groups = ["main"]
-files = [
-    {file = "ta_lib-0.6.3.tar.gz", hash = "sha256:0c628db09b3fab6e5c26979e608b674e7aecc10359c82ba8d53f729767a856ac"},
-]
-
-[package.dependencies]
-numpy = "*"
-setuptools = "*"
 
 [[package]]
 name = "terminado"
@@ -3978,4 +3963,4 @@ files = [
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.13"
-content-hash = "5c766c84cc5a1c545424541071c9f786e7be61355dd8fddd53759692cd8ddbc9"
+content-hash = "6f2f49d5c2de4f0f41ec0d17d96939df01aa5b70cb080bfae76fa9eb2c351a24"
