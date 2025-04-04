@@ -1190,6 +1190,9 @@ class Order:
 
     def cancel(self):
         """Cancel the order."""
+        if self.is_contingent:
+            return
+
         self.__broker.orders.remove(self)
         trade = self.__parent_trade
         if trade:
@@ -1446,7 +1449,7 @@ class Trade:
     def value(self):
         """Trade total value in cash (volume × price)."""
         price = self.__exit_price or self.__broker.last_price(self.__ticker)
-        return self.__size * price
+        return abs(self.__size) * price
 
     # SL/TP management API
 
