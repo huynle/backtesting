@@ -1300,7 +1300,7 @@ def calculate_ema(data, period, smoothing=2):
     
     # Calculate EMA for remaining data points
     for i in range(period, len(data)):
-        ema[i] = (data[i] - ema[i-1]) * multiplier + ema[i-1]
+        ema[i] = (data.iloc[i] - ema[i-1]) * multiplier + ema[i-1]
     
     return ema
 

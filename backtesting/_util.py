@@ -226,17 +226,8 @@ class _Data:
 
     @property
     def df(self) -> pd.DataFrame:
-        """Return a DataFrame view of the data."""
-        if not hasattr(self, '_df_cache') or self._df_cache is None:
-            if len(self.tickers) == 1:
-                # Use .loc to ensure you get a reference, not a copy
-                self._df_cache = self._df.loc[:, self.the_ticker]
-            else:
-                self._df_cache = self._df
-        
-        # Return the slice of the cached DataFrame
-        return self._df_cache.iloc[:self._len] if self._len < len(self._df_cache) else self._df_cache
-    
+        df_ = self._df[self.the_ticker] if len(self.tickers) == 1 else self._df
+        return df_.iloc[:self._len] if self._len < len(df_) else df_
 
     @property
     def pip(self) -> float:
