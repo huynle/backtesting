@@ -1177,15 +1177,15 @@ class Order:
         return self
 
     def __repr__(self):
-        return f"<Order {self.__ticker} {{}}>".format(", ".join(f"{param}={round(value, 5)}"
+        return '<Order {}>'.format(', '.join(f'{param}={try_(lambda: round(value, 5), value)!r}'
                 for param, value in (
-                    ("size", self.__size),
-                    ("limit", self.__limit_price),
-                    ("stop", self.__stop_price),
-                    ("sl", self.__sl_price),
-                    ("tp", self.__tp_price),
-                    ("contingent", self.is_contingent),
-                    ("tag", self.__tag),
+                                                 ('size', self.__size),
+                                                 ('limit', self.__limit_price),
+                                                 ('stop', self.__stop_price),
+                                                 ('sl', self.__sl_price),
+                                                 ('tp', self.__tp_price),
+                                                 ('contingent', self.is_contingent),
+                                                 ('tag', self.__tag),
                 ) if value is not None))  # noqa: E126
 
     def cancel(self):

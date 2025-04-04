@@ -990,7 +990,7 @@ class TestUtil(TestCase):
             self.assertTrue(o.attr)
         self.assertFalse(o.attr)
 
-    # @unittest.skipUnless(False, "Because of the multi-asset dataframe, we dont really want to add a 'new-key' dynamically; a MultiLevel DataFrame cannot handle that")
+    @unittest.skipUnless(False, "Because of the multi-asset dataframe, we dont really want to add a 'new-key' dynamically; a MultiLevel DataFrame cannot handle that")
     def test_pandas_accessors(self):
         class S(Strategy):
             def init(self):

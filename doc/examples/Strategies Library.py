@@ -58,8 +58,8 @@ class SmaCross(SignalStrategy,
         super().init()
         
         # Precompute the two moving averages
-        sma1 = self.I(SMA, self.data.Close.s, self.n1)
-        sma2 = self.I(SMA, self.data.Close.s, self.n2)
+        sma1 = self.I(SMA, self.data.Close, self.n1)
+        sma2 = self.I(SMA, self.data.Close, self.n2)
         
         # Where sma1 crosses sma2 upwards. Diff gives us [-1,0, *1*]
         signal = (pd.Series(sma1) > sma2).astype(int).diff().fillna(0)
