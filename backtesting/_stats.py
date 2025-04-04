@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import warnings
-
 from typing import TYPE_CHECKING, List, Union, cast
 
 import numpy as np
@@ -156,7 +154,7 @@ def compute_stats(
     # s.loc['Risk (Ann.) [%]'] = day_returns.std(ddof=1) * np.sqrt(annual_trading_days) * 100
     if is_datetime_index:
         time_in_years = (s.loc['Duration'].days + s.loc['Duration'].seconds / 86400) / annual_trading_days
-        s.loc['CAGR [%]'] = ((s.loc['Equity Final [$]'] / equity['Equity'][0])**(1 / time_in_years) - 1) * 100 if time_in_years else np.nan  # noqa: E501
+        s.loc['CAGR [%]'] = ((s.loc['Equity Final [$]'] / equity['Equity'].iloc[0])**(1 / time_in_years) - 1) * 100 if time_in_years else np.nan  # noqa: E501
 
     # Our Sharpe mismatches `empyrical.sharpe_ratio()` because they use arithmetic mean return
     # and simple standard deviation

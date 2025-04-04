@@ -88,6 +88,9 @@ Kelly Criterion                        0.6134
 _strategy              SmaCross(n1=10, n2=20)
 _equity_curve                          Equ...
 _trades                       Size  EntryB...
+_orders                       Size  EntryB...
+_positions        {'Asset': 0, 'Cash': 10000}
+_trade_start_bar                           10
 dtype: object
 ```
 [![plot of trading simulation](https://i.imgur.com/xRFNHfg.png)](https://kernc.github.io/backtesting.py/#example)
