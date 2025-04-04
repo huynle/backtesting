@@ -254,7 +254,7 @@ def plot(
     df = df[list(OHLCV_AGG.keys())].copy(deep=False)
 
     # Buy-and-hold cumulative returns
-    bnh_perf = df["Close"] / df["Close"].iloc[results["_trade_start_bar"]]
+    bnh_perf = df["Close"] / df["Close"].iloc[results["_trade_start_bar"] - 1]
     bnh_perf.iloc[: results["_trade_start_bar"]] = 1.0
 
     # Limit data to max_candles

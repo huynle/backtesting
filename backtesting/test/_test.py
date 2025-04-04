@@ -38,8 +38,8 @@ SHORT_DATA = GOOG.iloc[:20]  # Short data for fast tests with no indicator lag
 
 @contextmanager
 def _tempfile():
-    with NamedTemporaryFile(suffix=".html") as f:
-        if sys.platform.startswith("win"):
+    with NamedTemporaryFile(suffix='.html') as f:
+        if sys.platform.startswith('win'):
             f.close()
         yield f.name
 
@@ -130,13 +130,13 @@ class TestBacktest(TestCase):
     def test_assertions(self):
         class Assertive(Strategy):
             def init(self):
-                self.sma = self.I(SMA, self.data.Close.s, 10)
+                self.sma = self.I(SMA, self.data.Close, 10)
                 self.remains_indicator = np.r_[2] * np.cumsum(self.sma * 5 + 1) * np.r_[2]
 
                 self.transpose_invalid = self.I(lambda: np.column_stack((self.data.Open,
                                                                          self.data.Close)))
 
-                resampled = resample_apply('W', SMA, self.data.Close.s, 3)
+                resampled = resample_apply('W', SMA, self.data.Close, 3)
                 resampled_ind = resample_apply('W', SMA, self.sma, 3)
                 assert np.unique(resampled[-5:]).size == 1
                 assert np.unique(resampled[-6:]).size == 2
@@ -328,12 +328,9 @@ class TestBacktest(TestCase):
             except TypeError:
                 return a == b
 
-        diff = {}
-        for key, value in stats.filter(regex='^[^_]').items():
-            if not almost_equal(value, expected[key]):
-                print(key)  # This prints the key
-                diff[key] = value  # This assigns the value to the key in the diff dictionary
-
+        diff = {key: print(key) or value  # noqa: T201
+                for key, value in stats.filter(regex='^[^_]').items()
+            if not almost_equal(value, expected[key])}
         self.assertDictEqual(diff, {})
 
         self.assertSequenceEqual(
@@ -993,7 +990,7 @@ class TestUtil(TestCase):
             self.assertTrue(o.attr)
         self.assertFalse(o.attr)
 
-    # @unittest.skipUnless(False, "Because of the multi-asset dataframe, we dont really want to add a 'new-key' dynamically; a MultiLevel DataFrame cannot handle that")
+    @unittest.skipUnless(False, "Because of the multi-asset dataframe, we dont really want to add a 'new-key' dynamically; a MultiLevel DataFrame cannot handle that")
     def test_pandas_accessors(self):
         class S(Strategy):
             def init(self):

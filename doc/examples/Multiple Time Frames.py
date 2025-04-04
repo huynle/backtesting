@@ -78,22 +78,22 @@ class System(Strategy):
     
     def init(self):
         # Compute moving averages the strategy demands
-        self.ma10 = self.I(SMA, self.data.Close.s, 10)
-        self.ma20 = self.I(SMA, self.data.Close.s, 20)
-        self.ma50 = self.I(SMA, self.data.Close.s, 50)
-        self.ma100 = self.I(SMA, self.data.Close.s, 100)
+        self.ma10 = self.I(SMA, self.data.Close, 10)
+        self.ma20 = self.I(SMA, self.data.Close, 20)
+        self.ma50 = self.I(SMA, self.data.Close, 50)
+        self.ma100 = self.I(SMA, self.data.Close, 100)
         
         # Compute daily RSI(30)
-        self.daily_rsi = self.I(RSI, self.data.Close.s, self.d_rsi)
+        self.daily_rsi = self.I(RSI, self.data.Close, self.d_rsi)
         
         # To construct weekly RSI, we can use `resample_apply()`
         # helper function from the library
         self.weekly_rsi = resample_apply(
-            'W-FRI', RSI, self.data.Close.s, self.w_rsi)
+            'W-FRI', RSI, self.data.Close, self.w_rsi)
         
         
     def next(self):
-        price = self.data.Close.s.iloc[-1]
+        price = self.data.Close[-1]
         
         # If we don't already have a position, and
         # if all conditions are satisfied, enter long.

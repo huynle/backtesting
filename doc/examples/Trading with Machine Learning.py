@@ -186,7 +186,7 @@ class MLTrainOnceStrategy(Strategy):
             return
 
         # Proceed only with out-of-sample data. Prepare some variables
-        high, low, close = self.data.High.s, self.data.Low.s, self.data.Close.s
+        high, low, close = self.data.High, self.data.Low, self.data.Close
         current_time = self.data.index[-1]
 
         # Forecast the next movement
