@@ -3172,7 +3172,7 @@ all = ["joblib", "matplotlib", "scikit-learn (>=1.1)"]
 name = "scikit-learn"
 version = "1.6.1"
 description = "A set of python modules for machine learning and data mining"
-optional = true
+optional = false
 python-versions = ">=3.9"
 groups = ["main"]
 files = [
@@ -3432,7 +3432,7 @@ typing = ["mypy (>=1.6,<2.0)", "traitlets (>=5.11.1)"]
 name = "threadpoolctl"
 version = "3.6.0"
 description = "threadpoolctl"
-optional = true
+optional = false
 python-versions = ">=3.9"
 groups = ["main"]
 files = [
@@ -3714,4 +3714,4 @@ files = [
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.13"
-content-hash = "0d983c3f1ce17735a2e5912f74b22447d341a5a56c2d1205bec4d00a5afd391c"
+content-hash = "a379302a19a79e34a2f178cefc6b7802fb22b889bd59874af6e6a56b2f59545d"
