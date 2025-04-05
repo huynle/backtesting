@@ -1,5 +1,5 @@
 [tool.poetry]
-name = "backtesting.py"
+name = "backtesting"
 version = "0.1.0"
 description = "Backtest trading strategies in Python"
 readme = "README.md"
