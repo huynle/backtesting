@@ -20,7 +20,6 @@ from itertools import chain, compress, product, repeat
 from math import copysign
 from numbers import Number
 from typing import Callable, Dict, List, Optional, Sequence, Tuple, Type, Union
-import sambo
 
 import numpy as np
 import pandas as pd
@@ -2545,10 +2544,10 @@ class Backtest:
                                        Tuple[pd.Series, pd.Series],
                                        Tuple[pd.Series, pd.Series, dict]]:
 
-            # try:
-            #     import sambo
-            # except ImportError:
-            #     raise ImportError("Need package 'sambo' for method='sambo'. pip install sambo") from None
+            try:
+                import sambo
+            except ImportError:
+                raise ImportError("Need package 'sambo' for method='sambo'. pip install sambo") from None
 
             nonlocal max_tries
             max_tries = (200 if max_tries is None else
