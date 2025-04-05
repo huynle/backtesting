@@ -44,6 +44,7 @@ tqdm = "^4"
 sambo = "^1.25.1"
 joblib = "^1.4.2"
 scikit-learn = "^1.6.1"
+matplotlib = "^3.10.1"
 
 
 [tool.poetry.group.dev.dependencies]
