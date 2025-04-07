@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import os
 import sys
 import warnings
@@ -178,6 +179,7 @@ class _Data:
         self._ta = _TA(self.__df)
         self._update()
 
+
     def __getitem__(self, item):
         return self._get_array(item)
 
@@ -216,9 +218,14 @@ class _Data:
 
     @property
     def df(self) -> pd.DataFrame:
-        df_ = self.__df[self.the_ticker] if len(self.tickers) == 1 else self.__df
-        return df_.iloc[:self.__len] if self.__len < len(df_) else df_
-
+        """
+        Returns the underlying DataFrame, either for a single ticker or the full multi-asset DataFrame.
+        
+        This property also supports adding new columns to the DataFrame which can then be accessed
+        as attributes of the _Data object.
+        """
+        # Pass the full original DataFrame reference
+        return _DataFrameAccessor(self, self.__df)
 
     @property
     def pip(self) -> float:
@@ -230,9 +237,22 @@ class _Data:
     def _get_array(self, key) -> _Array:
         arr = self.__cache.get(key)
         if arr is None:
-            array, df = self.__arrays[key]
-            arr = self.__cache[key] = _Array(df.values[:self.__len], name=key, index=self.index)
+            try:
+                array, df = self.__arrays[key]
+                arr = self.__cache[key] = _Array(df.values[:self.__len], name=key, index=self.index)
+            except KeyError:
+                # Handle the case where key is not in __arrays
+                # This could be a dynamically added column
+                if key in self.__df.columns.levels[1]:
+                    # For multi-level DataFrame, get all values for this column across tickers
+                    df = self.__df.xs(key, axis=1, level=1)
+                    array = df.to_numpy()
+                    self.__arrays[key] = (array, df)
+                    arr = self.__cache[key] = _Array(df.values[:self.__len], name=key, index=self.index)
+                else:
+                    raise KeyError(f"Column '{key}' not in data")
         return arr
+    
 
     @property
     def Open(self) -> _Array:
@@ -291,6 +311,104 @@ class _Data:
         """Returns the technical analysis accessor for the data."""
         return self._ta
 
+class _DataFrameAccessor:
+    """
+    A wrapper around DataFrame that updates the _Data object's cache when new columns are added.
+    Provides sliced view for __getitem__ and delegates other methods.
+    """
+    def __init__(self, data_obj, original_df_ref):
+        self.__data_obj = data_obj
+        # Store a reference to the original DataFrame, not a slice
+        self.__original_df = original_df_ref
+
+    def __getitem__(self, key):
+        # Return the appropriate slice from the full DataFrame
+        current_len = self.__data_obj._Data__len
+        full_index = self.__data_obj._Data__df.index # Use the index from the main _Data object
+        try:
+            # Attempt to access the column(s) from the full DataFrame and then slice
+            return self.__original_df.loc[full_index[:current_len], key]
+        except KeyError as e:
+            # Handle MultiIndex case for single key access when only one ticker exists
+            if isinstance(self.__original_df.columns, pd.MultiIndex) and \
+               isinstance(key, str) and \
+               len(self.__data_obj.tickers) == 1:
+                ticker = self.__data_obj.the_ticker
+                if (ticker, key) in self.__original_df.columns:
+                    # Access the specific column tuple and slice
+                    return self.__original_df.loc[full_index[:current_len], (ticker, key)]
+            # Reraise if the key truly doesn't exist
+            raise KeyError(f"Key '{key}' not found in DataFrame") from e
+
+
+    def __setitem__(self, key, value):
+        # Modify the original DataFrame directly
+        full_index = self.__data_obj._Data__df.index # Use the index from the main _Data object
+
+        # Ensure value has the full length expected for the original DataFrame
+        if len(value) != len(self.__original_df):
+            if np.isscalar(value):
+                value = np.repeat(value, len(self.__original_df))
+            else:
+                # Attempt to align if value is a Series/array with matching index subset
+                try:
+                    # Use the current slice's index for alignment first
+                    aligned_value = pd.Series(value, index=self.__data_obj.index)
+                    # Then reindex to the full DataFrame's index
+                    aligned_value = aligned_value.reindex(full_index)
+                    value = aligned_value.values
+                except Exception as e:
+                    raise ValueError(f"Length mismatch or alignment error when setting column '{key}'. Expected {len(self.__original_df)}, got {len(value)}.") from e
+
+        if isinstance(self.__original_df.columns, pd.MultiIndex):
+            # Handle single string key for single-ticker case
+            if len(self.__data_obj.tickers) == 1 and isinstance(key, str):
+                ticker = self.__data_obj.the_ticker
+                # Use .loc with the full index for assignment
+                self.__original_df.loc[:, (ticker, key)] = value
+            elif isinstance(key, tuple) and len(key) == 2: # Assigning (ticker, column)
+                self.__original_df.loc[:, key] = value
+            else:
+                raise ValueError(f"Cannot assign key '{key}' to multi-asset DataFrame via .df accessor. Use tuple key (ticker, column) or ensure single asset.")
+        else: # Single-level DataFrame (should not occur with current Backtest init logic)
+             self.__original_df[key] = value
+
+        # Update the _Data object's arrays and cache
+        self.__data_obj._update()
+
+    # Delegate other DataFrame methods if needed, potentially slicing results
+    def __getattr__(self, name):
+        # Delegate attribute access to the full original DataFrame
+        attr = getattr(self.__original_df, name)
+
+        if callable(attr):
+            # Wrap the method call to potentially slice the result
+            @functools.wraps(attr)
+            def wrapper(*args, **kwargs):
+                result = attr(*args, **kwargs)
+                # Slice the result if it's a DataFrame or Series matching the full index length
+                current_len = self.__data_obj._Data__len
+                full_index = self.__data_obj._Data__df.index
+                if isinstance(result, (pd.DataFrame, pd.Series)) and len(result) == len(self.__original_df):
+                    # Use .loc with the full index for robust slicing
+                    return result.loc[full_index[:current_len]]
+                return result
+            return wrapper
+        else:
+            # For non-callable attributes (like properties), slice if needed
+            current_len = self.__data_obj._Data__len
+            full_index = self.__data_obj._Data__df.index
+            if isinstance(attr, (pd.DataFrame, pd.Series)) and len(attr) == len(self.__original_df):
+                 # Use .loc with the full index for robust slicing
+                 return attr.loc[full_index[:current_len]]
+            return attr # Return other attributes directly
+
+    def __repr__(self):
+        # Represent the current slice of the full DataFrame
+        current_len = self.__data_obj._Data__len
+        full_index = self.__data_obj._Data__df.index
+        # Use .loc with the full index for robust slicing
+        return repr(self.__original_df.loc[full_index[:current_len]])
 
 
 try:
