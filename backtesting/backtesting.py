@@ -991,13 +991,25 @@ class Strategy(ABC):
         """
         return self._data
 
-    def position(self, ticker: str = None) -> "Position":
-        """Instance of `backtesting.backtesting.Position`.
-
-        For single asset strategy, `ticker` can be left as None, which returns
-        the position of the only asset.
+    @property
+    def position(self) -> "Position":
         """
-        ticker = ticker or self._data.the_ticker
+        Instance of `backtesting.backtesting.Position`.
+
+        For single-asset strategies, this returns the position of the only asset.
+        For multi-asset strategies, accessing this property raises a `ValueError`.
+        Use `strategy.get_position(ticker)` method instead for multi-asset positions.
+        """
+        if len(self._data.tickers) > 1:
+            raise ValueError("For multi-asset strategies, use `strategy.get_position(ticker)` method to access specific asset positions.")
+        return self._broker.positions[self._data.the_ticker]
+
+    def get_position(self, ticker: str) -> "Position":
+        """
+        Instance of `backtesting.backtesting.Position` for a specific ticker.
+        """
+        if ticker not in self._broker.positions:
+            raise KeyError(f"Ticker '{ticker}' not found in broker positions.")
         return self._broker.positions[ticker]
 
     @property
@@ -1005,9 +1017,37 @@ class Strategy(ABC):
         """List of orders (see `Order`) waiting for execution."""
         return self._broker.orders
 
-    def trades(self, ticker: str = None) -> "Tuple[Trade, ...]":
-        """List of active trades (see `Trade`)."""
-        return tuple(self._broker.trades[ticker] if ticker else self._broker.all_trades)
+    @property
+    def trades(self) -> "Tuple[Trade, ...]":
+        """
+        List of active trades (see `Trade`) for the single asset.
+
+        For multi-asset strategies, accessing this property raises a `ValueError`.
+        Use `strategy.get_trades(ticker)` method instead.
+        """
+        if len(self._data.tickers) > 1:
+            raise ValueError("For multi-asset strategies, use `strategy.get_trades(ticker)` method to access specific asset trades.")
+        # Return trades for the single ticker
+        return tuple(self._broker.trades[self._data.the_ticker])
+
+    def get_trades(self, ticker: str = None) -> "Tuple[Trade, ...]":
+        """
+        List of active trades (see `Trade`) for a specific ticker or all tickers.
+
+        Args:
+            ticker: The ticker symbol for which to retrieve trades. If None, returns trades for all tickers.
+
+        Returns:
+            A tuple of active `Trade` objects.
+        """
+        if ticker:
+            if ticker not in self._broker.trades:
+                 raise KeyError(f"Ticker '{ticker}' not found in broker trades.")
+            return tuple(self._broker.trades[ticker])
+        else:
+            # Return all trades across all tickers if no specific ticker is provided
+            return tuple(self._broker.all_trades)
+
 
     @property
     def closed_trades(self) -> 'Tuple[Trade, ...]':
