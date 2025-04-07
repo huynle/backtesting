@@ -106,13 +106,13 @@ class SmaCross(Strategy):
         # If sma1 crosses above sma2, close any existing
         # short trades, and buy the asset
         if crossover(self.sma1, self.sma2):
-            self.position().close()
+            self.position.close()
             self.buy()
 
         # Else, if sma1 crosses below sma2, close any existing
         # long trades, and sell the asset
         elif crossover(self.sma2, self.sma1):
-            self.position().close()
+            self.position.close()
             self.sell()
 
 
@@ -134,12 +134,12 @@ class SmaCross(Strategy):
 #     def next(self):
 #         if (self.sma1[-2] < self.sma2[-2] and
 #                 self.sma1[-1] > self.sma2[-1]):
-#             self.position().close()
+#             self.position.close()
 #             self.buy()
 #
 #         elif (self.sma1[-2] > self.sma2[-2] and    # Ugh!
 #               self.sma1[-1] < self.sma2[-1]):
-#             self.position().close()
+#             self.position.close()
 #             self.sell()
 # -
 
@@ -147,7 +147,7 @@ class SmaCross(Strategy):
 #
 # **Note**: `self.data` and any indicators wrapped with `self.I` (e.g. `self.sma1`) are NumPy arrays for performance reasons. If you prefer pandas Series or DataFrame objects, use `Strategy.data.<column>.s` or `Strategy.data.df` accessors respectively. You could also construct the series manually, e.g. `pd.Series(self.data.Close, index=self.data.index)`.
 #
-# We might avoid `self.position().close()` calls if we primed the
+# We might avoid `self.position.close()` calls if we primed the
 # [`Backtest`](https://kernc.github.io/backtesting.py/doc/backtesting/backtesting.html#backtesting.backtesting.Backtest)
 # instance with `Backtest(..., exclusive_orders=True)`.
 

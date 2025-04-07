@@ -202,14 +202,14 @@ class MLTrainOnceStrategy(Strategy):
         # away from the current closing price.
         upper, lower = close[-1] * (1 + np.r_[1, -1]*self.price_delta)
 
-        if forecast == 1 and not self.position().is_long:
+        if forecast == 1 and not self.position.is_long:
             self.buy(size=.2, tp=upper, sl=lower)
-        elif forecast == -1 and not self.position().is_short:
+        elif forecast == -1 and not self.position.is_short:
             self.sell(size=.2, tp=lower, sl=upper)
 
         # Additionally, set aggressive stop-loss on trades that have been open 
         # for more than two days
-        for trade in self.trades():
+        for trade in self.trades:
             if current_time - trade.entry_time > pd.Timedelta('2 days'):
                 if trade.is_long:
                     trade.sl = max(trade.sl, low)

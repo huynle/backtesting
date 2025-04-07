@@ -1118,7 +1118,7 @@ class Position:
     `backtesting.backtesting.Strategy.next`.
     Can be used in boolean contexts, e.g.
 
-        if self.position():
+        if self.position:
             ...  # we have a position, either long or short
     """
 
