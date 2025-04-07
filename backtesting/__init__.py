@@ -87,4 +87,17 @@ def Pool(processes=None, initializer=None, initargs=()):
         from multiprocessing.dummy import Pool
         return Pool(processes, initializer, initargs)
     else:
+        # Limit processes on macOS to avoid "Too many open files" (GH-1269)
+        # TODO: Remove this workaround if/when multiprocessing handles this better.
+        import platform
+        if platform.system() == "Darwin" and processes is None:
+             # Use half the CPUs, but at least 1 and at most 8 (heuristic)
+             processes = max(1, min(8, mp.cpu_count() // 2))
+             import warnings
+             warnings.warn(
+                 f"Limiting multiprocessing pool size to {processes} on macOS "
+                 "to avoid potential 'Too many open files' errors. "
+                 "You can override this by passing `processes=...` to `bt.optimize()`.",
+                 category=RuntimeWarning, stacklevel=4
+             )
         return mp.Pool(processes, initializer, initargs)
