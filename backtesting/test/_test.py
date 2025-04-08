@@ -1303,3 +1303,31 @@ class TestBacktestMulti(object):
         # SPY_value = final_equity["SPY"]
         # total_value = goog_value + SPY_value
         # assert goog_value / total_value == pytest.approx(0.6, abs=0.1)
+        #
+    def test_multistrategy(self):
+        class MultiStrategy(Strategy):
+
+            lookback = 10
+
+            def init(self):
+                # Define ROC indicator for each asset ticker separately
+                self.roc = {}
+                for ticker in self.data.tickers:
+                    roc_series = self.data[ticker, "Close"].s.ta.roc(self.lookback)
+                    # Store each indicator, possibly naming it per ticker for clarity in plots
+                    self.roc[ticker] = self.I(lambda s=roc_series: s, name=f'ROC_{ticker}') # Use lambda to pass series
+
+            def next(self):
+                self.alloc.assume_zero()                                #2
+                # Build a Series of current ROC values indexed by ticker
+                current_roc = pd.Series({ticker: ind[-1] for ticker, ind in self.roc.items()}) #3
+                (self.alloc.bucket['equity']                            #4
+                    .append(current_roc.sort_values(ascending=False), current_roc > 0)  #5 Use current_roc
+                    .trim(3)                                            #6
+                    .weight_explicitly(1/3)                             #7
+                    .apply())                                           #8
+                self.rebalance(cash_reserve=0.01)                       #9
+
+        bt = Backtest(MULTI_ASSET_DATA, MultiStrategy, cash=1_000_000)
+        stats = bt.run()
+        assert stats["# Trades"] ==  0
