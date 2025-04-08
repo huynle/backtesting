@@ -1140,12 +1140,12 @@ class TestRegressions(TestCase):
         self.assertGreater(res['# Trades'], 0)
 
 
-    def test_ta_lib(self):
+    def test_talib_df(self):
         """integrated TA lib in a dataframe
         """
         class S(Strategy):
             def init(self):
-                self.I(self.data.df.ta.macd)
+                self.I(self.data.ta.macd)
 
             def next(self):
                 pass
@@ -1157,6 +1157,22 @@ class TestRegressions(TestCase):
                     plot_drawdown=False, plot_equity=False, plot_pl=False, plot_volume=False,
                     open_browser=False)
 
+    def test_talib_series(self):
+        """integrated TA lib in a dataframe
+        """
+        class S(Strategy):
+            def init(self):
+                self.I(self.data.Close.s.ta.ema(10))
+
+            def next(self):
+                pass
+
+        bt = Backtest(GOOG, S)
+        bt.run()
+        with _tempfile() as f:
+            bt.plot(filename=f,
+                    plot_drawdown=False, plot_equity=False, plot_pl=False, plot_volume=False,
+                    open_browser=False)
 
 
 # Create a multi-asset dataframe from the imported GOOG and SPY data

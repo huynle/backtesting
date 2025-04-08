@@ -118,8 +118,11 @@ class _Array(np.ndarray):
     in ._opts dict.
     """
     def __new__(cls, array, *, name=None, **kwargs):
+        # Capture name from original object if it exists, before potential conversion
+        original_name = getattr(array, 'name', None)
         obj = np.asarray(array).view(cls)
-        obj.name = name or array.name
+        # Prioritize explicit name, then original name, fallback to empty string
+        obj.name = name or original_name or ''
         obj._opts = kwargs
         return obj
 
@@ -685,7 +688,22 @@ class _TA:
                 raise AttributeError(
                     f'DataFrame columns can have at most 2 levels, got {self._obj.columns.nlevels}')
         elif self._is_series:
-            self.__indicator = PicklableAnalysisIndicators(obj)
+            # pandas_ta seems to expect a DataFrame even when initialized with a Series.
+            # Convert the Series to a DataFrame, ensuring a simple string column name
+            # to avoid AttributeError: Can only use .str accessor with Index, not MultiIndex
+            # which occurs if df.columns is a MultiIndex.
+            series_name = getattr(obj, 'name', None)
+            if isinstance(series_name, tuple) and len(series_name) == 2:
+                # Use the second element of the tuple (e.g., 'Close' from ('GOOG', 'Close'))
+                col_name = series_name[1]
+            elif isinstance(series_name, str):
+                col_name = series_name
+            else:
+                # Default column name if the original name is complex or missing
+                col_name = 'Close' # pandas_ta often defaults to looking for 'close'
+
+            df_from_series = obj.to_frame(name=col_name)
+            self.__indicator = PicklableAnalysisIndicators(df_from_series)
         else:
             raise TypeError("Input must be a pandas DataFrame or Series")
 
