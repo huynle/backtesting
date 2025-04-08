@@ -657,6 +657,7 @@ class PicklableAnalysisIndicators(AnalysisIndicators):
 
 
 @pd.api.extensions.register_dataframe_accessor("ta")
+@pd.api.extensions.register_series_accessor("ta")
 class _TA:
     def __getstate__(self):
         return self.__dict__.copy()
@@ -664,45 +665,75 @@ class _TA:
     def __setstate__(self, state):
         self.__dict__.update(state)
 
-    def __init__(self, df: pd.DataFrame):
-        if df.empty:
+    def __init__(self, obj: Union[pd.DataFrame, pd.Series]):
+        if obj.empty:
             return
-        self.__df = df
-        if self.__df.columns.nlevels == 2:
-            self.__tickers = list(self.__df.columns.levels[0])
-            self.__indicators = {ticker: PicklableAnalysisIndicators(df[ticker]) for ticker in self.__tickers}
-        elif self.__df.columns.nlevels == 1:
-            self.__tickers = []
-            self.__indicator = PicklableAnalysisIndicators(df)
+        self._obj = obj
+        self._is_series = isinstance(obj, pd.Series)
+        self._is_dataframe = isinstance(obj, pd.DataFrame)
+        self.__tickers = []
+        self.__indicators = {}
+        self.__indicator = None # For single DataFrame or Series
+
+        if self._is_dataframe:
+            if self._obj.columns.nlevels == 2:
+                self.__tickers = list(self._obj.columns.levels[0])
+                self.__indicators = {ticker: PicklableAnalysisIndicators(obj[ticker]) for ticker in self.__tickers}
+            elif self._obj.columns.nlevels == 1:
+                self.__indicator = PicklableAnalysisIndicators(obj)
+            else:
+                raise AttributeError(
+                    f'DataFrame columns can have at most 2 levels, got {self._obj.columns.nlevels}')
+        elif self._is_series:
+            self.__indicator = PicklableAnalysisIndicators(obj)
         else:
-            raise AttributeError(
-                f'df.columns can have at most 2 levels, got {self.__df.columns.nlevels}')
+            raise TypeError("Input must be a pandas DataFrame or Series")
+
 
     def __ta(self, method, *args, columns=None, **kwargs):
-        if self.__tickers:
+        if self.__tickers: # Multi-asset DataFrame
             dir_ = {ticker: getattr(indicator, method)(*args, **kwargs)
                     for ticker, indicator in self.__indicators.items()}
-            if columns:
+            if columns: # Rename columns if requested
                 for _, df in dir_.items():
                     df.columns = columns
+            # Return concatenated DataFrame or single DataFrame if only one ticker
             return pd.concat(dir_, axis=1) if len(dir_) > 1 else dir_[self.__tickers[0]]
-        else:
+        elif self.__indicator: # Single-asset DataFrame or Series
             return getattr(self.__indicator, method)(*args, **kwargs)
+        else: # Should not happen if __init__ worked
+             raise RuntimeError("TA object not properly initialized.")
 
     def __getattr__(self, method: str):
-        return partial(self.__ta, method)
+        # Allow calling pandas_ta methods directly, e.g., df.ta.sma()
+        if self.__indicator or self.__indicators:
+            return partial(self.__ta, method)
+        else:
+            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{method}' or is uninitialized")
 
     def apply(self, func, *args, **kwargs):
-        if self.__tickers:
-            dir_ = {ticker: func(self.__df[ticker], *args, **kwargs) for ticker in self.__tickers}
+        """Apply a custom function to the underlying data."""
+        if self.__tickers: # Multi-asset DataFrame
+            dir_ = {ticker: func(self._obj[ticker], *args, **kwargs) for ticker in self.__tickers}
             return pd.concat(dir_, axis=1)
+        elif self._is_dataframe or self._is_series: # Single DataFrame or Series
+            return func(self._obj, *args, **kwargs)
         else:
-            return func(self.__df, *args, **kwargs)
+             raise RuntimeError("TA object not properly initialized.")
 
-    def join(self, df, lsuffix='', rsuffix=''):
-        if self.__tickers:
-            dir_ = {ticker: self.__df[ticker].join(df[ticker], lsuffix=lsuffix, rsuffix=rsuffix)
+    def join(self, other, lsuffix='', rsuffix=''):
+        """Join with another DataFrame or Series."""
+        if self._is_series:
+            # Series.join needs 'other' to be Series or list of Series
+            return self._obj.join(other, lsuffix=lsuffix, rsuffix=rsuffix)
+        elif self.__tickers: # Multi-asset DataFrame
+            if not isinstance(other, pd.DataFrame) or other.columns.nlevels != 2 or \
+               set(self.__tickers) != set(other.columns.levels[0]):
+                raise ValueError("For multi-asset join, 'other' must be a DataFrame with matching tickers.")
+            dir_ = {ticker: self._obj[ticker].join(other[ticker], lsuffix=lsuffix, rsuffix=rsuffix)
                     for ticker in self.__tickers}
             return pd.concat(dir_, axis=1)
+        elif self._is_dataframe: # Single DataFrame
+            return self._obj.join(other, lsuffix=lsuffix, rsuffix=rsuffix)
         else:
-            return self.__df.join(df, lsuffix=lsuffix, rsuffix=rsuffix)
+             raise RuntimeError("TA object not properly initialized.")
