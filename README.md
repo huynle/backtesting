@@ -45,7 +45,24 @@ class SmaCross(Strategy):
             self.sell()
 
 
-bt = Backtest(GOOG, SmaCross, commission=.002,
+bt = Backtest(GOOG, SmaCross, commission=.002, 
+              exclusive_orders=True)
+
+# Multi-asset example
+from backtesting.test import SPY
+
+class MultiAssetStrategy(Strategy):
+    def init(self):
+        self.ma1 = self.I(SMA, self.data["GOOG", "Close"], 10)
+        self.ma2 = self.I(SMA, self.data["SPY", "Close"], 20)
+
+    def next(self):
+        if crossover(self.ma1, self.ma2):
+            self.buy(ticker="GOOG")
+        elif crossover(self.ma2, self.ma1):
+            self.sell(ticker="SPY")
+
+bt_multi = Backtest(MULTI_ASSET_DATA, MultiAssetStrategy, commission=.002, exclusive_orders=True)
               exclusive_orders=True)
 stats = bt.run()
 bt.plot()
@@ -107,6 +124,7 @@ Features
 * Indicator-library-agnostic
 * Supports _any_ financial instrument with candlestick data
 * Detailed results
+* Supports multi-asset trading with candlestick data
 * Interactive visualizations
 
 ![xkcd.com/1570](https://imgs.xkcd.com/comics/engineer_syllogism.png)
