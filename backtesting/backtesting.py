@@ -717,15 +717,15 @@ class Strategy(ABC):
                 f'Length of `name=` ({len(name)}) must agree with the number '
                 f'of arrays the indicator returns ({value.shape[0]}).')
 
-        if not is_arraylike or not 1 <= value.ndim <= 2 or value.shape[-1] != len(self._data.Close):
+        if not is_arraylike or not 1 <= value.ndim <= 2 or value.shape[-1] != len(self._data):
             raise ValueError(
                 'Indicators must return (optionally a tuple of) numpy.arrays of same '
-                f'length as `data` (data shape: {self._data.Close.shape}; indicator "{name}" '
+                f'length as `data` (data shape: {len(self._data)}; indicator "{name}" '
                 f'shape: {getattr(value, "shape", "")}, returned value: {value})')
 
         if plot and overlay is None and np.issubdtype(value.dtype, np.number):
             # For multi-asset data, try to determine which asset's price to compare with
-            if len(getattr(self._data.Close, 'shape', ())) > 1:
+            if len(self._data.tickers) > 1:
                 # If we can infer the asset from the args (common case), use that asset's Close
                 ticker = None
                 for arg in args:
@@ -2664,14 +2664,24 @@ class Backtest:
     @staticmethod
     def _mp_task(arg):
         bt, data_shm, params_batch = arg
-        bt._data, shm = SharedMemoryManager.shm2df(data_shm)
+        # shms_to_close will store the list of SharedMemory objects opened by shm2df
+        df, shms_to_close = SharedMemoryManager.shm2df(data_shm)
+        bt._data = df # Assign the reconstructed DataFrame to the Backtest instance
         try:
-            return [stats.filter(regex='^[^_]') if stats['# Trades'] else None
-                    for stats in (bt.run(**params)
-                                  for params in params_batch)]
+            results = [stats.filter(regex='^[^_]') if stats['# Trades'] else None
+                       for stats in (bt.run(**params)
+                                     for params in params_batch)]
+            return results
         finally:
-            for shmem in shm:
-                shmem.close()
+            # Explicitly close the shared memory segments opened in this worker
+            for shmem in shms_to_close:
+                try:
+                    shmem.close()
+                except Exception:
+                    # Log or warn about failure to close, but don't stop execution
+                    import warnings
+                    warnings.warn(f"Worker failed to close shared memory {getattr(shmem, 'name', 'unknown')}", ResourceWarning)
+            # bt._data = None # Optional: Clear reference if needed, though process exit should handle it
 
     def plot(self, *, results: pd.Series = None, filename=None, plot_width=None,
         plot_equity=True, plot_return=False, plot_pl=True,

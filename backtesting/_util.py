@@ -52,14 +52,28 @@ def _as_str(value) -> str:
         return str(value)
     if isinstance(value, pd.DataFrame):
         return value.attrs.get('name', None) or 'df'
-    name = str(getattr(value, 'name', '') or '')
-    if name in ('Open', 'High', 'Low', 'Close', 'Volume'):
-        return name[:1]
+
+    raw_name = getattr(value, 'name', '') # Get the name attribute directly
+
+    # Handle specific column names first (single string or tuple)
+    if isinstance(raw_name, str) and raw_name in ('Open', 'High', 'Low', 'Close', 'Volume'):
+        return raw_name[:1]
+    elif isinstance(raw_name, tuple) and len(raw_name) == 2:
+        # Check if the second element is a standard OHLCV column name
+        col_name = raw_name[1]
+        if isinstance(col_name, str) and col_name in ('Open', 'High', 'Low', 'Close', 'Volume'):
+            return col_name[:1] # Return 'O', 'H', 'L', 'C', 'V'
+
+    # Handle callable names
     if callable(value):
-        name = getattr(value, '__name__', value.__class__.__name__).replace('<lambda>', 'λ')
-    if len(name) > 10:
-        name = name[:9] + '…'
-    return name
+        name_str = getattr(value, '__name__', value.__class__.__name__).replace('<lambda>', 'λ')
+    else:
+        # Convert the raw name (could be tuple, string, etc.) to string
+        # If it wasn't handled above as a specific OHLCV tuple, convert the whole thing
+        name_str = str(raw_name or '') # Ensure it's a string
+
+    # Removed truncation logic from previous step
+    return name_str
 
 
 def _as_list(value) -> List:
@@ -256,23 +270,33 @@ class _Data:
 
     @property
     def Open(self) -> _Array:
-        return self._get_array('Open')
+        if len(self._tickers) > 1:
+            raise ValueError("Accessing `self.data.Open` is ambiguous in a multi-asset context. Use `self.data[ticker, 'Open']`.")
+        return self._get_array((self.the_ticker, 'Open'))
 
     @property
     def High(self) -> _Array:
-        return self._get_array('High')
+        if len(self._tickers) > 1:
+            raise ValueError("Accessing `self.data.High` is ambiguous in a multi-asset context. Use `self.data[ticker, 'High']`.")
+        return self._get_array((self.the_ticker, 'High'))
 
     @property
     def Low(self) -> _Array:
-        return self._get_array('Low')
+        if len(self._tickers) > 1:
+            raise ValueError("Accessing `self.data.Low` is ambiguous in a multi-asset context. Use `self.data[ticker, 'Low']`.")
+        return self._get_array((self.the_ticker, 'Low'))
 
     @property
     def Close(self) -> _Array:
-        return self._get_array('Close')
+        if len(self._tickers) > 1:
+            raise ValueError("Accessing `self.data.Close` is ambiguous in a multi-asset context. Use `self.data[ticker, 'Close']`.")
+        return self._get_array((self.the_ticker, 'Close'))
 
     @property
     def Volume(self) -> _Array:
-        return self._get_array('Volume')
+        if len(self._tickers) > 1:
+            raise ValueError("Accessing `self.data.Volume` is ambiguous in a multi-asset context. Use `self.data[ticker, 'Volume']`.")
+        return self._get_array((self.the_ticker, 'Volume'))
 
     @property
     def index(self) -> pd.DatetimeIndex:
@@ -311,6 +335,20 @@ class _Data:
         """Returns the technical analysis accessor for the data."""
         return self._ta
 
+
+class _IndexerWrapper:
+    """Helper class to wrap pandas indexers (iloc, loc) and simplify columns of the result if needed."""
+    def __init__(self, accessor_obj, original_indexer):
+        self._accessor = accessor_obj
+        self._original_indexer = original_indexer
+
+    def __getitem__(self, key):
+        # Perform the original indexing operation
+        result_slice = self._original_indexer[key]
+        # Simplify columns if necessary before returning
+        return self._accessor._simplify_df_columns(result_slice)
+
+
 class _DataFrameAccessor:
     """
     A wrapper around DataFrame that updates the _Data object's cache when new columns are added.
@@ -320,6 +358,25 @@ class _DataFrameAccessor:
         self.__data_obj = data_obj
         # Store a reference to the original DataFrame, not a slice
         self.__original_df = original_df_ref
+
+    def _simplify_df_columns(self, df_slice):
+        """Drops the top level of columns if it's a DataFrame with MultiIndex and only one ticker exists."""
+        if isinstance(df_slice, pd.DataFrame) and \
+           isinstance(df_slice.columns, pd.MultiIndex) and \
+           len(self.__data_obj.tickers) == 1:
+            # Drop the ticker level (level 0)
+            try:
+                # Only drop if the resulting columns are unique, otherwise keep MultiIndex
+                simplified_cols = df_slice.columns.droplevel(0)
+                if simplified_cols.is_unique:
+                    return df_slice.droplevel(0, axis=1)
+                else:
+                    # If dropping level leads to duplicate columns (e.g., custom columns with same name as OHLCV),
+                    # keep the MultiIndex to avoid ambiguity.
+                    return df_slice
+            except ValueError: # Cannot drop level on empty DataFrame or Series
+                return df_slice
+        return df_slice
 
     def __getitem__(self, key):
         # Return the appropriate slice from the full DataFrame
@@ -336,9 +393,56 @@ class _DataFrameAccessor:
                 ticker = self.__data_obj.the_ticker
                 if (ticker, key) in self.__original_df.columns:
                     # Access the specific column tuple and slice
-                    return self.__original_df.loc[full_index[:current_len], (ticker, key)]
-            # Reraise if the key truly doesn't exist
-            raise KeyError(f"Key '{key}' not found in DataFrame") from e
+                    key_to_use = (ticker, key)
+                # else: key might be a new column name, handled below? Or let KeyError happen?
+                # Let's assume if it's a string and single ticker, we try the tuple format.
+
+            # Attempt to access the column(s) from the full DataFrame and then slice
+            result_slice = self.__original_df.loc[full_index[:current_len], key_to_use]
+            # This simplification should happen regardless of how the slice was obtained
+            return self._simplify_df_columns(result_slice) 
+
+        # This except block might be unreachable if the try block handles all cases or raises appropriately.
+        # Let's simplify the logic.
+
+    def __getitem__(self, key):
+        current_len = self.__data_obj._Data__len
+        # Use the index corresponding to the current view length
+        current_view_index = self.__data_obj.index 
+
+        try:
+            if isinstance(key, slice):
+                # Apply slice to the current view's index to get target labels
+                target_index = current_view_index[key]
+                result_slice = self.__original_df.loc[target_index, :]
+            elif isinstance(key, str):
+                 # Handle string key (potential column access)
+                 if isinstance(self.__original_df.columns, pd.MultiIndex) and \
+                    len(self.__data_obj.tickers) == 1:
+                     # Try accessing as (ticker, key) for single-asset MultiIndex
+                     ticker = self.__data_obj.the_ticker
+                     try:
+                         # Try accessing the specific tuple key first
+                         result_slice = self.__original_df.loc[current_view_index, (ticker, key)]
+                     except KeyError:
+                         # If (ticker, key) fails, try accessing the key directly.
+                         result_slice = self.__original_df.loc[current_view_index, key] # This might raise KeyError again
+                 else:
+                     # Standard single-level column access or multi-asset access (requires tuple key)
+                     result_slice = self.__original_df.loc[current_view_index, key]
+            else:
+                 # Handle other key types (e.g., list of columns, boolean array for rows)
+                 # Assume key applies to rows if it's not a column label type pandas recognizes for columns
+                 result_slice = self.__original_df.loc[current_view_index, key]
+
+            # Simplify columns if it's a single-asset context and result is a DataFrame
+            return self._simplify_df_columns(result_slice)
+
+        except KeyError as e:
+             # Reraise if the key truly doesn't exist after trying various access methods
+             raise KeyError(f"Key '{key}' not found in DataFrame index or columns") from e
+        # except Exception as e: # Catch other potential indexing errors? Be careful not to mask useful errors.
+        #     raise RuntimeError(f"Error during DataFrame access with key '{key}'") from e
 
 
     def __setitem__(self, key, value):
@@ -376,32 +480,35 @@ class _DataFrameAccessor:
         # Update the _Data object's arrays and cache
         self.__data_obj._update()
 
-    # Delegate other DataFrame methods if needed, potentially slicing results
+    # Delegate other DataFrame methods/attributes
     def __getattr__(self, name):
-        # Delegate attribute access to the full original DataFrame
-        attr = getattr(self.__original_df, name)
-
-        if callable(attr):
-            # Wrap the method call to potentially slice the result
-            @functools.wraps(attr)
-            def wrapper(*args, **kwargs):
-                result = attr(*args, **kwargs)
-                # Slice the result if it's a DataFrame or Series matching the full index length
+        # Handle direct attribute access for standard OHLCV columns in single-asset context
+        if name in ['Open', 'High', 'Low', 'Close', 'Volume'] and len(self.__data_obj.tickers) == 1:
+            ticker = self.__data_obj.the_ticker
+            key_to_use = (ticker, name)
+            if key_to_use in self.__original_df.columns:
+                # Return the column as a Series, sliced to the current length
                 current_len = self.__data_obj._Data__len
                 full_index = self.__data_obj._Data__df.index
-                if isinstance(result, (pd.DataFrame, pd.Series)) and len(result) == len(self.__original_df):
-                    # Use .loc with the full index for robust slicing
-                    return result.loc[full_index[:current_len]]
-                return result
-            return wrapper
-        else:
-            # For non-callable attributes (like properties), slice if needed
-            current_len = self.__data_obj._Data__len
-            full_index = self.__data_obj._Data__df.index
-            if isinstance(attr, (pd.DataFrame, pd.Series)) and len(attr) == len(self.__original_df):
-                 # Use .loc with the full index for robust slicing
-                 return attr.loc[full_index[:current_len]]
-            return attr # Return other attributes directly
+                # .loc access with tuple key on MultiIndex DF returns a Series
+                series_slice = self.__original_df.loc[full_index[:current_len], key_to_use]
+                return series_slice
+            # If (ticker, name) is not found for some reason, fall through to standard delegation
+
+        # Always delegate attribute access directly to the original DataFrame for other attributes.
+        # Slicing for indexers (like .iloc) happens upon use.
+        try:
+            original_attr = getattr(self.__original_df, name)
+            # Intercept indexers like iloc, loc to simplify their results
+            if name in ['iloc', 'loc']:
+                # Return a custom indexer wrapper that simplifies results
+                return _IndexerWrapper(self, original_attr)
+            else:
+                # Delegate other attributes directly
+                return original_attr
+        except AttributeError:
+            # Raise AttributeError consistent with normal object behavior
+            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'") from None
 
     def __repr__(self):
         # Represent the current slice of the full DataFrame
@@ -417,26 +524,8 @@ try:
 except AttributeError:
     pass
 
-if sys.version_info >= (3, 13):
-    SharedMemory = _mpshm.SharedMemory
-else:
-    class SharedMemory(_mpshm.SharedMemory):
-        # From https://github.com/python/cpython/issues/82300#issuecomment-2169035092
-        __lock = Lock()
-
-        def __init__(self, *args, track: bool = True, **kwargs):
-            self._track = track
-            if track:
-                return super().__init__(*args, **kwargs)
-            with self.__lock:
-                with patch(_mprt, 'register', lambda *a, **kw: None):
-                    super().__init__(*args, **kwargs)
-
-        def unlink(self):
-            if _mpshm._USE_POSIX and self._name:
-                _mpshm._posixshmem.shm_unlink(self._name)
-                if self._track:
-                    _mprt.unregister(self._name, "shared_memory")
+# Always use the standard library SharedMemory
+SharedMemory = _mpshm.SharedMemory
 
 
 class SharedMemoryManager:
@@ -460,15 +549,29 @@ class SharedMemoryManager:
         return self
 
     def __exit__(self, *args, **kwargs):
-        for shm in self._shms:
+        # Reverse the list to potentially close/unlink dependencies last, although unlikely needed here.
+        # More importantly, handle close and unlink separately for better error isolation.
+        for shm in reversed(self._shms):
             try:
                 shm.close()
-                if shm._create:
-                    shm.unlink()
-            except Exception:
-                warnings.warn(f'Failed to unlink shared memory {shm.name!r}',
+            except Exception as e:
+                # Log closing error but continue attempting to unlink if needed
+                warnings.warn(f'Failed to close shared memory {getattr(shm, "name", "unknown")}: {e!r}',
                               category=ResourceWarning, stacklevel=2)
-                raise
+
+            # Only attempt unlink if this manager instance created the segment
+            if getattr(shm, '_create', False): # Check the flag set during creation
+                try:
+                    shm.unlink()
+                except FileNotFoundError:
+                    # This can happen if another process already unlinked it,
+                    # or if it failed to be created properly in the first place. Benign.
+                    pass
+                except Exception as e:
+                    # Log other unlink errors
+                    warnings.warn(f'Failed to unlink shared memory {getattr(shm, "name", "unknown")}: {e!r}',
+                                  category=ResourceWarning, stacklevel=2)
+                    # Decide whether to raise based on policy, currently just warns
 
     def arr2shm(self, vals):
         """Array to shared memory. Returns (shm_name, shape, dtype) used for restore."""
@@ -499,37 +602,48 @@ class SharedMemoryManager:
     def shm2df(data_shm):
         index_data = None
         data_dict = {}
-        shm_map = {}
-        shms_to_return = []
+        shms_to_close = [] # Keep track of opened shms to close them
 
-        for item in data_shm:
-            col, name, shape, dtype = item
-            # Create SharedMemory instance without tracking for read-only access in worker
-            shm = SharedMemory(name=name, create=False, track=False)
-            shm_map[name] = shm  # Keep reference to prevent premature release on some OS
-            shms_to_return.append(shm)
-            arr = SharedMemoryManager.shm2s(shm, shape, dtype)
-            if col == SharedMemoryManager._DF_INDEX_COL:
-                index_data = arr
-            else:
-                data_dict[col] = arr
+        try:
+            for item in data_shm:
+                col, name, shape, dtype = item
+                # Create SharedMemory instance for reading
+                shm = SharedMemory(name=name, create=False)
+                shms_to_close.append(shm) # Add to list for cleanup
+                # Read data into a Series (which copies the data from buffer)
+                arr = SharedMemoryManager.shm2s(shm, shape, dtype)
+                # Now that data is copied, we can close the shm handle in this worker
+                # shm.close() # Close immediately after reading - moved to finally block
 
-        if index_data is None:
-            raise ValueError("Index data not found in shared memory bundle.")
+                if col == SharedMemoryManager._DF_INDEX_COL:
+                    index_data = arr.copy() # Explicitly copy
+                else:
+                    data_dict[col] = arr.copy() # Explicitly copy
 
-        df = pd.DataFrame(data_dict)
+            if index_data is None:
+                raise ValueError("Index data not found in shared memory bundle.")
 
-        # Check if original columns were MultiIndex tuples based on the keys stored
-        if data_dict and all(isinstance(c, tuple) for c in data_dict.keys()):
-             # Ensure columns are sorted correctly if necessary, though dict order is preserved >= 3.7
-             df.columns = pd.MultiIndex.from_tuples(df.columns)
+            df = pd.DataFrame(data_dict)
 
-        # Reconstruct index
-        df.index = index_data
-        df.index.name = None  # Restore original state (index name is not stored)
+            # Check if original columns were MultiIndex tuples based on the keys stored
+            if data_dict and all(isinstance(c, tuple) for c in data_dict.keys()):
+                 # Ensure columns are sorted correctly if necessary, though dict order is preserved >= 3.7
+                 df.columns = pd.MultiIndex.from_tuples(sorted(df.columns)) # Sort for consistency
 
-        # Return df and the list of shm objects to keep refs
-        return df, shms_to_return
+            # Reconstruct index
+            df.index = index_data
+            df.index.name = None  # Restore original state (index name is not stored)
+
+            # Return only the DataFrame. The worker's job with SHM is done.
+            return df, [] # Return empty list as shms are closed here
+        finally:
+            # Ensure all opened shared memory segments are closed in this worker
+            for shm in shms_to_close:
+                try:
+                    shm.close()
+                except Exception:
+                    # Log or warn about failure to close if necessary, but continue
+                    pass # Avoid masking original error if one occurred
 
 
 
