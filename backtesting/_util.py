@@ -52,14 +52,28 @@ def _as_str(value) -> str:
         return str(value)
     if isinstance(value, pd.DataFrame):
         return value.attrs.get('name', None) or 'df'
-    name = str(getattr(value, 'name', '') or '')
-    if name in ('Open', 'High', 'Low', 'Close', 'Volume'):
-        return name[:1]
+
+    raw_name = getattr(value, 'name', '') # Get the name attribute directly
+
+    # Handle specific column names first (single string or tuple)
+    if isinstance(raw_name, str) and raw_name in ('Open', 'High', 'Low', 'Close', 'Volume'):
+        return raw_name[:1]
+    elif isinstance(raw_name, tuple) and len(raw_name) == 2:
+        # Check if the second element is a standard OHLCV column name
+        col_name = raw_name[1]
+        if isinstance(col_name, str) and col_name in ('Open', 'High', 'Low', 'Close', 'Volume'):
+            return col_name[:1] # Return 'O', 'H', 'L', 'C', 'V'
+
+    # Handle callable names
     if callable(value):
-        name = getattr(value, '__name__', value.__class__.__name__).replace('<lambda>', 'λ')
-    if len(name) > 10:
-        name = name[:9] + '…'
-    return name
+        name_str = getattr(value, '__name__', value.__class__.__name__).replace('<lambda>', 'λ')
+    else:
+        # Convert the raw name (could be tuple, string, etc.) to string
+        # If it wasn't handled above as a specific OHLCV tuple, convert the whole thing
+        name_str = str(raw_name or '') # Ensure it's a string
+
+    # Removed truncation logic from previous step
+    return name_str
 
 
 def _as_list(value) -> List:
