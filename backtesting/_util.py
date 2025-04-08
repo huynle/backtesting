@@ -256,23 +256,33 @@ class _Data:
 
     @property
     def Open(self) -> _Array:
-        return self._get_array('Open')
+        if len(self._tickers) > 1:
+            raise ValueError("Accessing `self.data.Open` is ambiguous in a multi-asset context. Use `self.data[ticker, 'Open']`.")
+        return self._get_array((self.the_ticker, 'Open'))
 
     @property
     def High(self) -> _Array:
-        return self._get_array('High')
+        if len(self._tickers) > 1:
+            raise ValueError("Accessing `self.data.High` is ambiguous in a multi-asset context. Use `self.data[ticker, 'High']`.")
+        return self._get_array((self.the_ticker, 'High'))
 
     @property
     def Low(self) -> _Array:
-        return self._get_array('Low')
+        if len(self._tickers) > 1:
+            raise ValueError("Accessing `self.data.Low` is ambiguous in a multi-asset context. Use `self.data[ticker, 'Low']`.")
+        return self._get_array((self.the_ticker, 'Low'))
 
     @property
     def Close(self) -> _Array:
-        return self._get_array('Close')
+        if len(self._tickers) > 1:
+            raise ValueError("Accessing `self.data.Close` is ambiguous in a multi-asset context. Use `self.data[ticker, 'Close']`.")
+        return self._get_array((self.the_ticker, 'Close'))
 
     @property
     def Volume(self) -> _Array:
-        return self._get_array('Volume')
+        if len(self._tickers) > 1:
+            raise ValueError("Accessing `self.data.Volume` is ambiguous in a multi-asset context. Use `self.data[ticker, 'Volume']`.")
+        return self._get_array((self.the_ticker, 'Volume'))
 
     @property
     def index(self) -> pd.DatetimeIndex:
@@ -311,6 +321,20 @@ class _Data:
         """Returns the technical analysis accessor for the data."""
         return self._ta
 
+
+class _IndexerWrapper:
+    """Helper class to wrap pandas indexers (iloc, loc) and simplify columns of the result if needed."""
+    def __init__(self, accessor_obj, original_indexer):
+        self._accessor = accessor_obj
+        self._original_indexer = original_indexer
+
+    def __getitem__(self, key):
+        # Perform the original indexing operation
+        result_slice = self._original_indexer[key]
+        # Simplify columns if necessary before returning
+        return self._accessor._simplify_df_columns(result_slice)
+
+
 class _DataFrameAccessor:
     """
     A wrapper around DataFrame that updates the _Data object's cache when new columns are added.
@@ -320,6 +344,25 @@ class _DataFrameAccessor:
         self.__data_obj = data_obj
         # Store a reference to the original DataFrame, not a slice
         self.__original_df = original_df_ref
+
+    def _simplify_df_columns(self, df_slice):
+        """Drops the top level of columns if it's a DataFrame with MultiIndex and only one ticker exists."""
+        if isinstance(df_slice, pd.DataFrame) and \
+           isinstance(df_slice.columns, pd.MultiIndex) and \
+           len(self.__data_obj.tickers) == 1:
+            # Drop the ticker level (level 0)
+            try:
+                # Only drop if the resulting columns are unique, otherwise keep MultiIndex
+                simplified_cols = df_slice.columns.droplevel(0)
+                if simplified_cols.is_unique:
+                    return df_slice.droplevel(0, axis=1)
+                else:
+                    # If dropping level leads to duplicate columns (e.g., custom columns with same name as OHLCV),
+                    # keep the MultiIndex to avoid ambiguity.
+                    return df_slice
+            except ValueError: # Cannot drop level on empty DataFrame or Series
+                return df_slice
+        return df_slice
 
     def __getitem__(self, key):
         # Return the appropriate slice from the full DataFrame
@@ -336,9 +379,56 @@ class _DataFrameAccessor:
                 ticker = self.__data_obj.the_ticker
                 if (ticker, key) in self.__original_df.columns:
                     # Access the specific column tuple and slice
-                    return self.__original_df.loc[full_index[:current_len], (ticker, key)]
-            # Reraise if the key truly doesn't exist
-            raise KeyError(f"Key '{key}' not found in DataFrame") from e
+                    key_to_use = (ticker, key)
+                # else: key might be a new column name, handled below? Or let KeyError happen?
+                # Let's assume if it's a string and single ticker, we try the tuple format.
+
+            # Attempt to access the column(s) from the full DataFrame and then slice
+            result_slice = self.__original_df.loc[full_index[:current_len], key_to_use]
+            # This simplification should happen regardless of how the slice was obtained
+            return self._simplify_df_columns(result_slice) 
+
+        # This except block might be unreachable if the try block handles all cases or raises appropriately.
+        # Let's simplify the logic.
+
+    def __getitem__(self, key):
+        current_len = self.__data_obj._Data__len
+        # Use the index corresponding to the current view length
+        current_view_index = self.__data_obj.index 
+
+        try:
+            if isinstance(key, slice):
+                # Apply slice to the current view's index to get target labels
+                target_index = current_view_index[key]
+                result_slice = self.__original_df.loc[target_index, :]
+            elif isinstance(key, str):
+                 # Handle string key (potential column access)
+                 if isinstance(self.__original_df.columns, pd.MultiIndex) and \
+                    len(self.__data_obj.tickers) == 1:
+                     # Try accessing as (ticker, key) for single-asset MultiIndex
+                     ticker = self.__data_obj.the_ticker
+                     try:
+                         # Try accessing the specific tuple key first
+                         result_slice = self.__original_df.loc[current_view_index, (ticker, key)]
+                     except KeyError:
+                         # If (ticker, key) fails, try accessing the key directly.
+                         result_slice = self.__original_df.loc[current_view_index, key] # This might raise KeyError again
+                 else:
+                     # Standard single-level column access or multi-asset access (requires tuple key)
+                     result_slice = self.__original_df.loc[current_view_index, key]
+            else:
+                 # Handle other key types (e.g., list of columns, boolean array for rows)
+                 # Assume key applies to rows if it's not a column label type pandas recognizes for columns
+                 result_slice = self.__original_df.loc[current_view_index, key]
+
+            # Simplify columns if it's a single-asset context and result is a DataFrame
+            return self._simplify_df_columns(result_slice)
+
+        except KeyError as e:
+             # Reraise if the key truly doesn't exist after trying various access methods
+             raise KeyError(f"Key '{key}' not found in DataFrame index or columns") from e
+        # except Exception as e: # Catch other potential indexing errors? Be careful not to mask useful errors.
+        #     raise RuntimeError(f"Error during DataFrame access with key '{key}'") from e
 
 
     def __setitem__(self, key, value):
@@ -376,32 +466,35 @@ class _DataFrameAccessor:
         # Update the _Data object's arrays and cache
         self.__data_obj._update()
 
-    # Delegate other DataFrame methods if needed, potentially slicing results
+    # Delegate other DataFrame methods/attributes
     def __getattr__(self, name):
-        # Delegate attribute access to the full original DataFrame
-        attr = getattr(self.__original_df, name)
-
-        if callable(attr):
-            # Wrap the method call to potentially slice the result
-            @functools.wraps(attr)
-            def wrapper(*args, **kwargs):
-                result = attr(*args, **kwargs)
-                # Slice the result if it's a DataFrame or Series matching the full index length
+        # Handle direct attribute access for standard OHLCV columns in single-asset context
+        if name in ['Open', 'High', 'Low', 'Close', 'Volume'] and len(self.__data_obj.tickers) == 1:
+            ticker = self.__data_obj.the_ticker
+            key_to_use = (ticker, name)
+            if key_to_use in self.__original_df.columns:
+                # Return the column as a Series, sliced to the current length
                 current_len = self.__data_obj._Data__len
                 full_index = self.__data_obj._Data__df.index
-                if isinstance(result, (pd.DataFrame, pd.Series)) and len(result) == len(self.__original_df):
-                    # Use .loc with the full index for robust slicing
-                    return result.loc[full_index[:current_len]]
-                return result
-            return wrapper
-        else:
-            # For non-callable attributes (like properties), slice if needed
-            current_len = self.__data_obj._Data__len
-            full_index = self.__data_obj._Data__df.index
-            if isinstance(attr, (pd.DataFrame, pd.Series)) and len(attr) == len(self.__original_df):
-                 # Use .loc with the full index for robust slicing
-                 return attr.loc[full_index[:current_len]]
-            return attr # Return other attributes directly
+                # .loc access with tuple key on MultiIndex DF returns a Series
+                series_slice = self.__original_df.loc[full_index[:current_len], key_to_use]
+                return series_slice
+            # If (ticker, name) is not found for some reason, fall through to standard delegation
+
+        # Always delegate attribute access directly to the original DataFrame for other attributes.
+        # Slicing for indexers (like .iloc) happens upon use.
+        try:
+            original_attr = getattr(self.__original_df, name)
+            # Intercept indexers like iloc, loc to simplify their results
+            if name in ['iloc', 'loc']:
+                # Return a custom indexer wrapper that simplifies results
+                return _IndexerWrapper(self, original_attr)
+            else:
+                # Delegate other attributes directly
+                return original_attr
+        except AttributeError:
+            # Raise AttributeError consistent with normal object behavior
+            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'") from None
 
     def __repr__(self):
         # Represent the current slice of the full DataFrame

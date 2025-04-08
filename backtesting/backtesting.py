@@ -717,15 +717,15 @@ class Strategy(ABC):
                 f'Length of `name=` ({len(name)}) must agree with the number '
                 f'of arrays the indicator returns ({value.shape[0]}).')
 
-        if not is_arraylike or not 1 <= value.ndim <= 2 or value.shape[-1] != len(self._data.Close):
+        if not is_arraylike or not 1 <= value.ndim <= 2 or value.shape[-1] != len(self._data):
             raise ValueError(
                 'Indicators must return (optionally a tuple of) numpy.arrays of same '
-                f'length as `data` (data shape: {self._data.Close.shape}; indicator "{name}" '
+                f'length as `data` (data shape: {len(self._data)}; indicator "{name}" '
                 f'shape: {getattr(value, "shape", "")}, returned value: {value})')
 
         if plot and overlay is None and np.issubdtype(value.dtype, np.number):
             # For multi-asset data, try to determine which asset's price to compare with
-            if len(getattr(self._data.Close, 'shape', ())) > 1:
+            if len(self._data.tickers) > 1:
                 # If we can infer the asset from the args (common case), use that asset's Close
                 ticker = None
                 for arg in args:
