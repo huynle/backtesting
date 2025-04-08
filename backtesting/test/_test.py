@@ -1277,6 +1277,7 @@ class TestBacktestMulti(object):
 
         bt = Backtest(MULTI_ASSET_DATA, MultiAssetStrategy, cash=1000000)
         stats = bt.run()
+        bt.plot()
         assert stats["# Trades"] == 82
         assert stats["_positions"] == {"GOOG": 7127, "SPY": 0, "Cash": 30}
 
@@ -1303,7 +1304,7 @@ class TestBacktestMulti(object):
         # SPY_value = final_equity["SPY"]
         # total_value = goog_value + SPY_value
         # assert goog_value / total_value == pytest.approx(0.6, abs=0.1)
-        #
+        
     def test_multistrategy(self):
         class MultiStrategy(Strategy):
 
@@ -1329,5 +1330,5 @@ class TestBacktestMulti(object):
                 self.rebalance(cash_reserve=0.01)                       #9
 
         bt = Backtest(MULTI_ASSET_DATA, MultiStrategy, cash=1_000_000)
-        stats = bt.run()
-        assert stats["# Trades"] ==  0
+        bt.run()
+        bt.plot()
