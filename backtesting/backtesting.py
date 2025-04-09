@@ -2224,14 +2224,16 @@ class Backtest:
             warnings.warn('Data index is not sorted in ascending order. Sorting.', 
                           stacklevel=2)
             data = data.sort_index()
+        # Check for NaNs only in OHLC, Volume is optional and can contain NaNs
+        ohlc_required = ["Open", "High", "Low", "Close"]
         if (
-            data.loc[:, (slice(None), ohlc)]
+            data.loc[:, (slice(None), ohlc_required)]
             .apply(lambda s: s.loc[s.first_valid_index() :].isna().sum())
             .sum()
             > 0
         ):
             raise ValueError(
-                "Some OHLC values are missing (NaN). "
+                "Some Open, High, Low, Close values are missing (NaN). "
                 "Please strip those lines with `df.dropna()` or "
                 "fill them in with `df.interpolate()` or whatever."
             )
