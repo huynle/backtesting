@@ -130,6 +130,11 @@ Features
 ![xkcd.com/1570](https://imgs.xkcd.com/comics/engineer_syllogism.png)
 
 
+Issues
+------
+* plotting volume does not work for multi-asset, since it is 'multi-asset'
+
+
 Bugs
 ----
 Before reporting bugs or posting to the

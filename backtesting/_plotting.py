@@ -211,14 +211,13 @@ def plot(
     data: pd.DataFrame,
     df: pd.DataFrame,
     indicators: List[Union[pd.DataFrame, pd.Series]],
-    filename='', plot_width=None, plot_pl=True,
-    plot_volume=False, plot_drawdown=False, plot_trades=True,
+    filename='', plot_width=None,
+    plot_equity=True, plot_return=False, plot_pl=True,
+    plot_volume=True, plot_drawdown=False, plot_trades=True,
     smooth_equity=False, relative_equity=True,
-    superimpose=False, resample=True,
+    superimpose=True, resample=True,
     reverse_indicators=True,
     show_legend=True, open_browser=True,
-    plot_equity=True,
-    plot_return=False,
     plot_allocation=False,
     relative_allocation=True,
     plot_indicator=True,
@@ -295,10 +294,10 @@ def plot(
     trade_source = ColumnDataSource(dict(
         index=trades["ExitBar"] if not trades.empty else [],
         datetime=trades["ExitTime"] if not trades.empty else [],
-        exit_price=trades["ExitPrice"] if not trades.empty else [],
-        ticker=trades["Ticker"] if not trades.empty else [],
         size=trades["Size"] if not trades.empty else [],
         returns_positive=(trades["ReturnPct"] > 0).astype(int).astype(str) if not trades.empty else [],
+        exit_price=trades["ExitPrice"] if not trades.empty else [],
+        ticker=trades["Ticker"] if not trades.empty else [],
     ))
 
     inc_cmap = factor_cmap('inc', COLORS, ['0', '1'])
@@ -616,9 +615,10 @@ return this.labels[index] || "";
 
     def _plot_ohlc():
         """Main OHLC bars"""
-        fig_ohlc.segment('index', 'High', 'index', 'Low', source=source, color="black")
+        fig_ohlc.segment('index', 'High', 'index', 'Low', source=source, color="black",
+                         legend_label='OHLC')
         r = fig_ohlc.vbar('index', BAR_WIDTH, 'Open', 'Close', source=source,
-                         line_color="black", fill_color=inc_cmap)
+                          line_color="black", fill_color=inc_cmap, legend_label='OHLC')
         return r
 
     def _plot_ohlc_trades():
@@ -720,9 +720,7 @@ return this.labels[index] || "";
 
             for j, arr in enumerate(value):
                 color = next(colors)
-                current_legend_label = legend_labels[j]
-                source_name = f'{re.sub(r'[^a-zA-Z0-9_]', '_', str(current_legend_label))}_{i}_{j}'
-
+                source_name = f'{legend_labels[j]}_{i}_{j}'
                 if arr.dtype == bool:
                     arr = arr.astype(int)
                 source.add(arr, source_name)
@@ -821,10 +819,14 @@ return this.labels[index] || "";
     fig_ohlc.x_range.js_on_change('end', CustomJS(args=custom_js_args,
                                                   code=_AUTOSCALE_JS_CALLBACK))
 
-    plots = figs_above_ohlc + [fig_ohlc] + figs_below_ohlc
-    linked_crosshair = CrosshairTool(dimensions='both')
+    figs = figs_above_ohlc + [fig_ohlc] + figs_below_ohlc
+    linked_crosshair = CrosshairTool(
+        dimensions='both', line_color='lightgrey',
+        overlay=(Span(dimension="width", line_dash="dotted", line_width=1),
+                 Span(dimension="height", line_dash="dotted", line_width=1)),
+    )
 
-    for f in plots:
+    for f in figs:
         if f.legend:
             f.legend.visible = show_legend
             f.legend.location = 'top_left'
@@ -835,27 +837,26 @@ return this.labels[index] || "";
             f.legend.margin = 0
             f.legend.label_text_font_size = '8pt'
             f.legend.click_policy = "hide"
+            f.legend.background_fill_alpha = .9
         f.min_border_left = 0
         f.min_border_top = 3
         f.min_border_bottom = 6
         f.min_border_right = 10
         f.outline_line_color = '#666666'
-        f.toolbar.logo = None
 
         f.add_tools(linked_crosshair)
-        wheelzoom_tools = [wz for wz in f.tools if isinstance(wz, WheelZoomTool)]
-        if wheelzoom_tools:
-             wheelzoom_tool = wheelzoom_tools[0]
-             wheelzoom_tool.maintain_focus = False  # type: ignore
+        wheelzoom_tool = next(wz for wz in f.tools if isinstance(wz, WheelZoomTool))
+        wheelzoom_tool.maintain_focus = False
 
     kwargs_grid = {}
     if plot_width is None:
         kwargs_grid['sizing_mode'] = 'stretch_width'
 
     fig = gridplot(
-        plots,
+        figs,
         ncols=1,
         toolbar_location='right',
+        toolbar_options=dict(logo=None),
         merge_tools=True,
         **kwargs_grid,  # type: ignore
     )
@@ -879,7 +880,7 @@ def plot_heatmaps(heatmap: pd.Series, agg: Union[Callable, str], ncols: int,
          warnings.warn('No data to plot in heatmap.')
          return None
 
-    plots = []
+    figs = []
     valid_dfs = [df for df in dfs if not df.empty and not df['_Value'].isnull().all()]
     if not valid_dfs:
          warnings.warn('All heatmap data is NaN. Cannot determine color range.')
@@ -932,14 +933,14 @@ def plot_heatmaps(heatmap: pd.Series, agg: Union[Callable, str], ncols: int,
             fill_color=dict(field='_Value',
                             transform=cmap))
         fig.toolbar.logo = None
-        plots.append(fig)
+        figs.append(fig)
 
-    if not plots:
+    if not figs:
         warnings.warn('No valid heatmaps generated.')
         return None
 
     fig = gridplot(
-        plots,  # type: ignore
+        figs,  # type: ignore
         ncols=ncols,
         toolbar_location='above',
         merge_tools=True,

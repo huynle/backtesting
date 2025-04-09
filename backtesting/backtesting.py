@@ -2106,14 +2106,6 @@ class Backtest:
         [#538](https://github.com/kernc/backtesting.py/issues/538),
         [#633](https://github.com/kernc/backtesting.py/issues/633).
 
-        {'AAPL': 10, 'MSFT': 5}
-
-    `commission` is the commission ratio. E.g. if your broker's commission
-    is 1% of trade value, set commission to `0.01`. Note, if you wish to
-    account for bid-ask spread, you can approximate doing so by increasing
-    the commission, e.g. set it to `0.0002` for commission-less forex
-    trading where the average spread is roughly 0.2‰ of asking price.
-
     `margin` is the required margin (ratio) of a leveraged account.
     No difference is made between initial and maintenance margins.
     To run the backtest using e.g. 50:1 leverge that your broker allows,
@@ -2189,16 +2181,16 @@ class Backtest:
                             'and returns commission dollar value')
 
         data = data.copy(deep=False)
-        ohlc = ["Open", "High", "Low", "Close"]
+        ohlc = ["Open", "High", "Low", "Close", "Volume"]
 
         # Convert single asset data into 2-level column index
         if data.columns.nlevels == 1:
             data.columns = pd.MultiIndex.from_product([["Asset"], data.columns])
 
-        # Convert index to datetime index
+        # Convert index to datetime index if it's not already a DatetimeIndex or RangeIndex
+        # and if it's a numeric index with most values representing timestamps after 1975.
         if (not isinstance(data.index, pd.DatetimeIndex) and
             not isinstance(data.index, pd.RangeIndex) and
-            # Numeric index with most large numbers
             (data.index.is_numeric() and
              (data.index > pd.Timestamp('1975').timestamp()).mean() > .8)):
             try:
@@ -2206,8 +2198,20 @@ class Backtest:
             except ValueError:
                 pass
 
-        if not set(data.columns.levels[1]).issuperset(set(ohlc)):
-            raise ValueError("`data` must be a pandas.DataFrame containing columns 'Open', 'High', 'Low', 'Close'")
+        # Check if 'Volume' exists; add it if it doesn't
+        if 'Volume' not in data.columns.levels[1]:
+            # Add 'Volume' to each ticker with NaN values
+            for ticker in data.columns.levels[0]:
+                data[(ticker, 'Volume')] = np.nan
+            # Update the levels of the MultiIndex to include 'Volume'
+            levels = [data.columns.levels[0], pd.Index(['Open', 'High', 'Low', 'Close', 'Volume'])]
+            data.columns = pd.MultiIndex.from_product(levels)
+
+        # Verify that the DataFrame contains all required columns ('Open', 'High', 'Low', 'Close', 'Volume')
+        if not set(data.columns.levels[1]).issuperset(ohlc):
+            raise ValueError(
+                "`data` must be a pandas.DataFrame containing columns 'Open', 'High', 'Low', 'Close', and 'Volume'"
+            )
 
         if len(data) == 0:
             raise ValueError("`data` cannot be empty")
@@ -2687,7 +2691,7 @@ class Backtest:
         plot_equity=True, plot_return=False, plot_pl=True,
         plot_volume=False, plot_drawdown=False, plot_trades=True,
         smooth_equity=False, relative_equity=True,
-        superimpose: Union[bool, str] = False,
+        superimpose: Union[bool, str] = True,
         resample=True, reverse_indicators=False,
         show_legend=True, open_browser=True,
         plot_allocation=False,

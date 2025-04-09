@@ -1297,7 +1297,7 @@ class TestBacktestMulti(object):
         bt = Backtest(MULTI_ASSET_DATA, RebalanceStrategy, cash=1_000_000)
         stats = bt.run()
         assert stats["# Trades"] ==  0
-        # bt.plot()
+        bt.plot()
         # # Check if final equity distribution is roughly 60/40
         # final_equity = stats._equity_curve.iloc[-1]
         # goog_value = final_equity["GOOG"]
