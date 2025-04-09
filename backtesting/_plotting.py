@@ -23,8 +23,9 @@ from bokeh.models import (  # type: ignore
     CrosshairTool,
     CustomJS,
     ColumnDataSource,
+    CustomJSTransform,
+    Label, NumeralTickFormatter,
     Legend,
-    NumeralTickFormatter,
     Span,
     HoverTool,
     Range1d,
@@ -40,7 +41,7 @@ from bokeh.io import curdoc, output_notebook, output_file, show
 from bokeh.io.state import curstate
 from bokeh.layouts import gridplot
 from bokeh.palettes import Category10
-from bokeh.transform import factor_cmap
+from bokeh.transform import factor_cmap, transform
 
 from backtesting._util import _data_period, _as_list, _Indicator, try_
 
@@ -530,44 +531,31 @@ return this.labels[index] || "";
         """Profit/Loss markers section"""
         fig = new_indicator_figure(y_axis_label="Profit / Loss", height=80)
         fig.add_layout(Span(location=0, dimension='width', line_color='#666666',
-                            line_dash='dashed', line_width=1,
-            )
-        )
-        returns_long = np.where(trades['Size'] > 0, trades['ReturnPct'], np.nan)
-        returns_short = np.where(trades['Size'] < 0, trades['ReturnPct'], np.nan)
-        if not trades.empty:
-            size = trades['Size'].abs()
-            size_min, size_max = size.min(), size.max()
-            if size_min == size_max:
-                 size_scaled = np.full(len(size), 14)
-            else:
-                 size_scaled = np.interp(size, (size_min, size_max), (8, 20))
-            trade_source.add(size_scaled, 'marker_size')
-        else:
-            trade_source.add([], 'marker_size')
-
-        trade_source.add(returns_long, 'returns_long')
-        trade_source.add(returns_short, 'returns_short')
-
+                            line_dash='dashed', level='underlay', line_width=1))
+        trade_source.add(trades['ReturnPct'], 'returns')
+        size = trades['Size'].abs()
+        size = np.interp(size, (size.min(), size.max()), (8, 20))
+        trade_source.add(size, 'marker_size')
         if 'count' in trades:
             trade_source.add(trades['count'], 'count')
-        r1 = fig.scatter('index', 'returns_long', source=trade_source, fill_color=cmap,
-                         marker='triangle', line_color='black', size='marker_size')
-        r2 = fig.scatter('index', 'returns_short', source=trade_source, fill_color=cmap,
-                         marker='inverted_triangle', line_color='black', size='marker_size')
-        tooltips = [('Ticker', '@ticker'), ('Size', '@size{0,0}')]
+        trade_source.add(trades[['EntryBar', 'ExitBar']].values.tolist(), 'lines')
+        fig.multi_line(xs='lines',
+                       ys=transform('returns', CustomJSTransform(v_func='return [...xs].map(i => [0, i]);')),
+                       source=trade_source, color='#999', line_width=1)
+        r1 = fig.scatter('index', 'returns', source=trade_source, fill_color=cmap,
+                         marker='circle', line_color='black', size='marker_size')
+        tooltips = [("Size", "@size{0,0}")]
         if 'count' in trades:
             tooltips.append(("Count", "@count{0,0}"))
-        set_tooltips(fig, tooltips + [("P/L", "@returns_long{+0.[000]%}")],
+        set_tooltips(fig, tooltips + [("P/L", "@returns{+0.[000]%}")],
             vline=False, renderers=[r1])
-        set_tooltips(fig, tooltips + [("P/L", "@returns_short{+0.[000]%}")],
-            vline=False, renderers=[r2])
         fig.yaxis.formatter = NumeralTickFormatter(format="0.[00]%")
         return fig
 
     def _plot_volume_section():
         """Volume section"""
-        fig = new_indicator_figure(y_axis_label='Volume')
+        fig = new_indicator_figure(height=70, y_axis_label="Volume")
+        fig.yaxis.ticker.desired_num_ticks = 3
         fig.xaxis.formatter = fig_ohlc.xaxis[0].formatter
         fig.xaxis.visible = True
         fig_ohlc.xaxis.visible = False  # Show only Volume's xaxis
@@ -684,8 +672,8 @@ return this.labels[index] || "";
         """Strategy indicators"""
 
         def _too_many_dims(value):
-            ndim = getattr(value, 'ndim', 0)
-            if ndim > 2:
+            assert value.ndim >= 2
+            if value.ndim > 2:
                 warnings.warn(f"Can't plot indicators with >2D ('{value.name}')",
                               stacklevel=5)
                 return True
