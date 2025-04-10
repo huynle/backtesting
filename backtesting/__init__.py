@@ -74,6 +74,7 @@ from .backtesting import Backtest, Strategy, Allocation # noqa: F401
 def Pool(processes=None, initializer=None, initargs=()):
     import platform
     import multiprocessing as mp
+    # mp.set_start_method('forkserver', force=True) # or 'forkserver'
     if mp.get_start_method() == 'spawn':
         import warnings
         warnings.warn(
@@ -87,9 +88,7 @@ def Pool(processes=None, initializer=None, initargs=()):
             category=RuntimeWarning, stacklevel=3)
         from multiprocessing.dummy import Pool
         if platform.system() in ["Darwin", "Linux"]:
-            # Pool = mp.Pool
-            return Pool(processes, initializer, initargs)
-
+            Pool = mp.Pool
         return Pool(processes, initializer, initargs)
     else:
         return mp.Pool(processes, initializer, initargs)
