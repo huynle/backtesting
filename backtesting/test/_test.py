@@ -1021,6 +1021,7 @@ class TestDocs(TestCase):
         self.assertGreaterEqual(len(examples), 4)
         with chdir(gettempdir()):
             for file in examples:
+                print(f"Running: {file}")
                 with self.subTest(example=os.path.basename(file)):
                     run_path(file)
 

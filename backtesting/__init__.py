@@ -75,7 +75,11 @@ def Pool(processes=None, initializer=None, initargs=()):
     import platform
     import multiprocessing as mp
     # return mp.Pool(processes, initializer, initargs)
-    if platform.system() == "Darwin" and processes is None:
+    if platform.system() in ["Darwin", "Linux"]:
+        if processes is None:
+            processes = mp.cpu_count()
+            # processes = max(1, min(8, mp.cpu_count() // 2))
+            # processes = max(1, min(8, mp.cpu_count() // 2))
         return mp.Pool(processes, initializer, initargs)
 
     if mp.get_start_method() == 'spawn':
