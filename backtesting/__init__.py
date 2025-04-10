@@ -72,32 +72,22 @@ from .backtesting import Backtest, Strategy, Allocation # noqa: F401
 
 # Add overridable backtesting.Pool used for parallel optimization
 def Pool(processes=None, initializer=None, initargs=()):
+    import platform
     import multiprocessing as mp
+    # return mp.Pool(processes, initializer, initargs)
+    if platform.system() == "Darwin" and processes is None:
+        return mp.Pool(processes, initializer, initargs)
+
     if mp.get_start_method() == 'spawn':
         import warnings
-        warnings.warn(
-            "If you want to use multi-process optimization with "
-                "`multiprocessing.get_start_method() == 'spawn'` (e.g. on Windows),"
-                "set `backtesting.Pool = multiprocessing.Pool` (or of the desired context) "
-                "and hide `bt.optimize()` call behind a `if __name__ == '__main__'` guard. "
-                "Currently using thread-based paralellism, "
-                "which might be slightly slower for non-numpy / non-GIL-releasing code. "
-                "See https://github.com/kernc/backtesting.py/issues/1256",
-            category=RuntimeWarning, stacklevel=3)
-        from multiprocessing.dummy import Pool
-        return Pool(processes, initializer, initargs)
-    else:
-        # Limit processes on macOS to avoid "Too many open files" (GH-1269)
-        # TODO: Remove this workaround if/when multiprocessing handles this better.
-        import platform
-        if platform.system() == "Darwin" and processes is None:
             # Use half the CPUs, but at least 1 and at most 8 (heuristic)
-            processes = max(1, min(8, mp.cpu_count() // 2))
-            import warnings
-            warnings.warn(
-                f"Limiting multiprocessing pool size to {processes} on macOS "
-                    "to avoid potential 'Too many open files' errors. "
-                    "You can override this by passing `processes=...` to `bt.optimize()`.",
-                category=RuntimeWarning, stacklevel=4
-            )
+            # processes = max(1, min(8, mp.cpu_count() // 2))
+        warnings.warn(
+            f"Limiting multiprocessing pool size to {processes} on macOS "
+                "to avoid potential 'Too many open files' errors. "
+                "You can override this by passing `processes=...` to `bt.optimize()`.",
+            category=RuntimeWarning, stacklevel=4
+        )
+        return mp.Pool(processes, initializer, initargs)
+    else:
         return mp.Pool(processes, initializer, initargs)
