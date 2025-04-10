@@ -571,15 +571,29 @@ class SharedMemoryManager:
         return self
 
     def __exit__(self, *args, **kwargs):
-        for shm in self._shms:
+        # Reverse the list to potentially close/unlink dependencies last, although unlikely needed here.
+        # More importantly, handle close and unlink separately for better error isolation.
+        for shm in reversed(self._shms):
             try:
                 shm.close()
-                if shm._create:
-                    shm.unlink()
-            except Exception:
-                warnings.warn(f'Failed to unlink shared memory {shm.name!r}',
+            except Exception as e:
+                # Log closing error but continue attempting to unlink if needed
+                warnings.warn(f'Failed to close shared memory {getattr(shm, "name", "unknown")}: {e!r}',
                               category=ResourceWarning, stacklevel=2)
-                raise
+
+            # Only attempt unlink if this manager instance created the segment
+            if getattr(shm, '_create', False): # Check the flag set during creation
+                try:
+                    shm.unlink()
+                except FileNotFoundError:
+                    # This can happen if another process already unlinked it,
+                    # or if it failed to be created properly in the first place. Benign.
+                    pass
+                except Exception as e:
+                    # Log other unlink errors
+                    warnings.warn(f'Failed to unlink shared memory {getattr(shm, "name", "unknown")}: {e!r}',
+                              category=ResourceWarning, stacklevel=2)
+                    # Decide whether to raise based on policy, currently just warns
 
     def arr2shm(self, vals):
         """Array to shared memory. Returns (shm_name, shape, dtype) used for restore."""
