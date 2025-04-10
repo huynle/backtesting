@@ -527,8 +527,26 @@ try:
 except AttributeError:
     pass
 
-# Always use the standard library SharedMemory
-SharedMemory = _mpshm.SharedMemory
+if sys.version_info >= (3, 13):
+    SharedMemory = _mpshm.SharedMemory
+else:
+    class SharedMemory(_mpshm.SharedMemory):
+        # From https://github.com/python/cpython/issues/82300#issuecomment-2169035092
+        __lock = Lock()
+
+        def __init__(self, *args, track: bool = True, **kwargs):
+            self._track = track
+            if track:
+                return super().__init__(*args, **kwargs)
+            with self.__lock:
+                with patch(_mprt, 'register', lambda *a, **kw: None):
+                    super().__init__(*args, **kwargs)
+
+        def unlink(self):
+            if _mpshm._USE_POSIX and self._name:
+                _mpshm._posixshmem.shm_unlink(self._name)
+                if self._track:
+                    _mprt.unregister(self._name, "shared_memory")
 
 
 class SharedMemoryManager:
@@ -538,9 +556,8 @@ class SharedMemoryManager:
 
     _DF_INDEX_PREFIX = '__bt_index_'  # Prefix for MultiIndex levels
 
-    def __init__(self, create=False) -> None:
+    def __init__(self) -> None:
         self._shms: list[SharedMemory] = []
-        self.__create = create
 
     def SharedMemory(self, *, name=None, create=False, size=0, track=True):
         shm = SharedMemory(name=name, create=create, size=size, track=track)
@@ -600,25 +617,23 @@ class SharedMemoryManager:
         return column_data, index_data
 
 
-    @staticmethod
-    def shm2s(shm, shape, dtype) -> pd.Series:
+    def shm2s(self, shm, shape, dtype) -> pd.Series:
         arr = np.ndarray(shape, dtype=dtype.base, buffer=shm.buf)
         arr.setflags(write=False)
         return pd.Series(arr, dtype=dtype)
 
 
-    @staticmethod
-    def shm2df(column_data, index_data):
+    def shm2df(self, column_data, index_data):
         """
         Reconstructs a DataFrame (including MultiIndex) from shared memory.
         """
         # Create shared memory objects for column and index data
-        column_shms = [SharedMemory(name=name, create=False, track=False) for _, name, _, _ in column_data]
-        index_shms = [SharedMemory(name=name, create=False, track=False) for _, name, _, _ in index_data]
+        column_shms = [self.SharedMemory(name=name, create=False, track=False) for _, name, _, _ in column_data]
+        index_shms = [self.SharedMemory(name=name, create=False, track=False) for _, name, _, _ in index_data]
 
         # Reconstruct columns
         df = pd.DataFrame({
-            col: SharedMemoryManager.shm2s(shm, shape, dtype)
+            col: self.shm2s(shm, shape, dtype)
             for shm, (col, _, shape, dtype) in zip(column_shms, column_data)
         })
 
@@ -626,7 +641,7 @@ class SharedMemoryManager:
         index_levels = []
         index_names = []
         for shm, (index_name, _, shape, dtype) in zip(index_shms, index_data):
-            index_level = SharedMemoryManager.shm2s(shm, shape, dtype)
+            index_level = self.shm2s(shm, shape, dtype)
             index_levels.append(index_level)
             index_names.append(None)  # Index names are not stored in shared memory in this example
 

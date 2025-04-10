@@ -2672,14 +2672,11 @@ class Backtest:
     @staticmethod
     def _mp_task(arg):
         bt, data_shm, params_batch = arg
-        bt._data, shm = SharedMemoryManager.shm2df(*data_shm)
-        try:
+        with SharedMemoryManager() as shm_manager:
+            bt._data, shm = shm_manager.shm2df(*data_shm)
             return [stats.filter(regex='^[^_]') if stats['# Trades'] else None
                        for stats in (bt.run(**params)
                                      for params in params_batch)]
-        finally:
-            for shmem in shm:
-                    shmem.close()
 
     def plot(self, *, results: pd.Series = None, filename=None, plot_width=None,
         plot_equity=True, plot_return=False, plot_pl=True,
