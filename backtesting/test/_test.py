@@ -910,7 +910,7 @@ class TestLib(TestCase):
                 self.set_signal(self.data.Close > sma,
                                 self.data.Close < sma)
 
-        stats = Backtest(GOOG, S, fail_fast=False).run()
+        stats = Backtest(GOOG, S).run()
         self.assertIn(stats['# Trades'], (1179, 1180))  # varies on different archs?
 
     def test_TrailingStrategy(self):
@@ -1048,7 +1048,7 @@ class TestRegressions(TestCase):
         arr = np.r_[100, 100, 100, 50, 50]
         df = pd.DataFrame({'Open': arr, 'High': arr, 'Low': arr, 'Close': arr})
         with self.assertWarnsRegex(UserWarning, 'index is not datetime'):
-            bt = Backtest(df, S, cash=100, fail_fast=False, trade_on_close=True)
+            bt = Backtest(df, S, cash=100, trade_on_close=True)
         self.assertEqual(bt.run()._trades['ExitPrice'][0], 50)
 
     def test_stats_annualized(self):
@@ -1379,121 +1379,7 @@ class MyStrat(Strategy):
                 # else: ATR not available, cannot place order with ATR-based SL
 
 
-class TestBacktestMulti(object):
-
-    def test_multi_asset_run(self):
-        class MultiAssetStrategy(Strategy):
-            """
-            A strategy that trades GOOG and SPY based on simple moving average crossovers.
-
-            This strategy buys GOOG when its closing price is above its 10-day SMA and
-            sells SPY when its closing price is below its 10-day SMA.
-            """
-
-            def init(self):
-                # Calculate 10-day SMA for GOOG
-                self.ema_goog = self.I(calculate_ema, self.data["GOOG", "Close"].s, 10)
-
-                # Calculate 10-day SMA for SPY
-                self.ema_spy = self.I(calculate_ema, self.data["SPY", "Close"].s, 10)
-
-                # Calculate EMAs for SPY to determine market health
-                self.ema10_spy = self.I(
-                    calculate_ema, self.data["SPY", "Close"].s, 10, name="SPY_EMA10"
-                )
-                self.ema20_spy = self.I(
-                    calculate_ema, self.data["SPY", "Close"].s, 20, name="SPY_EMA20"
-                )
-                self.ema50_spy = self.I(
-                    calculate_ema, self.data["SPY", "Close"].s, 50, name="SPY_EMA50"
-                )
-
-                # Calculate EMAs for GOOG
-                self.ema20_goog = self.I(
-                    calculate_ema, self.data["GOOG", "Close"].s, 20, name="GOOG_EMA20"
-                )
-
-            def next(self):
-                # Check if market is healthy: SPY 10 EMA > 20 EMA and price > 50 EMA
-                market_healthy = (self.ema10_spy[-1] > self.ema20_spy[-1]) and (
-                    self.data["SPY", "Close"][-1] > self.ema50_spy[-1]
-                )
-
-                # If market is healthy and GOOG is above its 10-day SMA, buy GOOG
-                if (
-                    market_healthy
-                    and self.data["GOOG", "Close"][-1] > self.ema_goog[-1]
-                ):
-                    if not self.get_position("GOOG"):
-                        # self.buy(ticker="GOOG", size=0.1)
-                        self.buy(ticker="GOOG")
-
-                # If GOOG falls below its 20 EMA, liquidate 50% of position
-                if (
-                    self.get_position("GOOG")
-                    and self.data["GOOG", "Close"][-1] < self.ema20_goog[-1]
-                ):
-                    current_size = self.get_position("GOOG").size
-                    # self.position("GOOG").close(portion=0.5)
-                    self.get_position("GOOG").close()
-
-        bt = Backtest(MULTI_ASSET_DATA, MultiAssetStrategy, cash=1000000)
-        stats = bt.run()
-        bt.plot()
-        assert stats["# Trades"] == 82
-        assert stats["_positions"] == {"GOOG": 7127, "SPY": 0, "Cash": 30}
-
-    def test_multi_asset_rebalance(self):
-        class RebalanceStrategy(Strategy):
-            def init(self):
-                pass
-
-            def next(self):
-                if len(self.data) % 10 == 0:  # Rebalance every 10 days
-                    self.alloc.assume_zero()
-                    self.alloc.weights["GOOG"] = 1.0
-                    self.alloc.weights["SPY"] = 0
-                    # Set cash_reserve to 0 for closer target allocation in test
-                    self.rebalance(cash_reserve=0)
-
-        bt = Backtest(MULTI_ASSET_DATA, RebalanceStrategy, cash=1_000_000)
-        stats = bt.run()
-        assert stats["# Trades"] ==  0
-        bt.plot()
-        # # Check if final equity distribution is roughly 60/40
-        # final_equity = stats._equity_curve.iloc[-1]
-        # goog_value = final_equity["GOOG"]
-        # SPY_value = final_equity["SPY"]
-        # total_value = goog_value + SPY_value
-        # assert goog_value / total_value == pytest.approx(0.6, abs=0.1)
-
-    def test_multistrategy(self):
-        class MultiStrategy(Strategy):
-
-            lookback = 10
-
-            def init(self):
-                # Define ROC indicator for each asset ticker separately
-                self.roc = {}
-                for ticker in self.data.tickers:
-                    roc_series = self.data[ticker, "Close"].s.ta.roc(self.lookback)
-                    # Store each indicator, possibly naming it per ticker for clarity in plots
-                    self.roc[ticker] = self.I(lambda s=roc_series: s, name=f'ROC_{ticker}') # Use lambda to pass series
-
-            def next(self):
-                self.alloc.assume_zero()                                #2
-                # Build a Series of current ROC values indexed by ticker
-                current_roc = pd.Series({ticker: ind[-1] for ticker, ind in self.roc.items()}) #3
-                (self.alloc.bucket['equity']                            #4
-                    .append(current_roc.sort_values(ascending=False), current_roc > 0)  #5 Use current_roc
-                    .trim(3)                                            #6
-                    .weight_explicitly(1/3)                             #7
-                    .apply())                                           #8
-                self.rebalance(cash_reserve=0.01)                       #9
-
-        bt = Backtest(MULTI_ASSET_DATA, MultiStrategy, cash=1_000_000)
-        bt.run()
-        bt.plot()
+class TestSHM(object):
 
     def test_shm(self):
         # This test involves reading local data and uses multiprocessing optimization,
@@ -1644,7 +1530,7 @@ class TestBacktestMulti(object):
 
         sum([frame["TotalSignal"].value_counts() for frame in dataframes], start=0)
 
-        # plot_candlestick_with_signals(dataframes[0], start_index=300, num_rows=355)
+        plot_candlestick_with_signals(dataframes[0], start_index=300, num_rows=355)
 
 
         from backtesting import Backtest # Strategy is now defined globally

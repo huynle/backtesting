@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import functools
 import os
 import sys
 import warnings
@@ -12,7 +11,7 @@ from multiprocessing import resource_tracker as _mprt
 from multiprocessing import shared_memory as _mpshm
 from numbers import Number
 from threading import Lock
-from typing import Callable, Dict, List, Optional, Sequence, Union, cast
+from typing import Dict, List, Optional, Sequence, Union, cast
 from pandas_ta import AnalysisIndicators
 
 import numpy as np
@@ -571,29 +570,15 @@ class SharedMemoryManager:
         return self
 
     def __exit__(self, *args, **kwargs):
-        # Reverse the list to potentially close/unlink dependencies last, although unlikely needed here.
-        # More importantly, handle close and unlink separately for better error isolation.
-        for shm in reversed(self._shms):
+        for shm in self._shms:
             try:
                 shm.close()
-            except Exception as e:
-                # Log closing error but continue attempting to unlink if needed
-                warnings.warn(f'Failed to close shared memory {getattr(shm, "name", "unknown")}: {e!r}',
-                              category=ResourceWarning, stacklevel=2)
-
-            # Only attempt unlink if this manager instance created the segment
-            if getattr(shm, '_create', False): # Check the flag set during creation
-                try:
+                if shm._create:
                     shm.unlink()
-                except FileNotFoundError:
-                    # This can happen if another process already unlinked it,
-                    # or if it failed to be created properly in the first place. Benign.
-                    pass
-                except Exception as e:
-                    # Log other unlink errors
-                    warnings.warn(f'Failed to unlink shared memory {getattr(shm, "name", "unknown")}: {e!r}',
+            except Exception:
+                warnings.warn(f'Failed to unlink shared memory {shm.name!r}',
                               category=ResourceWarning, stacklevel=2)
-                    # Decide whether to raise based on policy, currently just warns
+                raise
 
     def arr2shm(self, vals):
         """Array to shared memory. Returns (shm_name, shape, dtype) used for restore."""

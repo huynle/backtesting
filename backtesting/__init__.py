@@ -74,24 +74,19 @@ from .backtesting import Backtest, Strategy, Allocation # noqa: F401
 def Pool(processes=None, initializer=None, initargs=()):
     import platform
     import multiprocessing as mp
-    # return mp.Pool(processes, initializer, initargs)
-    if platform.system() in ["Darwin", "Linux"]:
-        if processes is None:
-            processes = mp.cpu_count()
-            # processes = max(1, min(8, mp.cpu_count() // 2))
-            # processes = max(1, min(8, mp.cpu_count() // 2))
-        return mp.Pool(processes, initializer, initargs)
-
     if mp.get_start_method() == 'spawn':
         import warnings
-            # Use half the CPUs, but at least 1 and at most 8 (heuristic)
-            # processes = max(1, min(8, mp.cpu_count() // 2))
         warnings.warn(
-            f"Limiting multiprocessing pool size to {processes} on macOS "
-                "to avoid potential 'Too many open files' errors. "
-                "You can override this by passing `processes=...` to `bt.optimize()`.",
-            category=RuntimeWarning, stacklevel=4
-        )
+            "If you want to use multi-process optimization with "
+            "`multiprocessing.get_start_method() == 'spawn'` (e.g. on Windows),"
+            "set `backtesting.Pool = multiprocessing.Pool` (or of the desired context) "
+            "and hide `bt.optimize()` call behind a `if __name__ == '__main__'` guard. "
+            "Currently using thread-based paralellism, "
+            "which might be slightly slower for non-numpy / non-GIL-releasing code. "
+            "See https://github.com/kernc/backtesting.py/issues/1256",
+            category=RuntimeWarning, stacklevel=3)
+        if platform.system() in ["Darwin", "Linux"]:
+            return mp.Pool(processes, initializer, initargs)
         return mp.Pool(processes, initializer, initargs)
     else:
         return mp.Pool(processes, initializer, initargs)
