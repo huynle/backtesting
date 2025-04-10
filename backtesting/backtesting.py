@@ -16,7 +16,7 @@ from abc import ABC, abstractmethod
 from copy import copy
 from datetime import datetime
 from functools import lru_cache, partial
-from itertools import chain, compress, product, repeat
+from itertools import chain, product, repeat
 from math import copysign
 from numbers import Number
 from typing import Callable, Dict, List, Optional, Sequence, Tuple, Type, Union
@@ -960,7 +960,7 @@ class Strategy(ABC):
     @property
     def equity(self) -> float:
         """Current account equity (cash plus assets)."""
-        return self._broker.equity()
+        return self._broker.equity
 
     @property
     def data(self) -> _Data:
@@ -1525,7 +1525,9 @@ class Trade:
 
     def __set_contingent(self, type, price):
         assert type in ('sl', 'tp')
-        assert price is None or 0 < price < np.inf, f'Make sure 0 < price < inf! price: {price}'
+        # assert price is None or 0 < price < np.inf, f'Make sure 0 < price < inf! price: {price}'
+        if not (price is None or 0 < price < np.inf):
+            raise AssertionError(f'Make sure 0 < price < inf! price: {price}')
         attr = f'_{self.__class__.__qualname__}__{type}_order'
         order: Order = getattr(self, attr)
         if order:
@@ -1637,12 +1639,12 @@ class _Broker:
         # rebalance if force rebalance is true or portfolio weights have changed
         if force or alloc.modified:
             # money value of current portfolio
-            total_equity = self.equity()
+            total_equity = self.equity
             # desired values for each ticker excluding cash reserve that is not to be allocated
             value_allocation = alloc.weights * total_equity * (1 - cash_reserve)
             # calculate the amount to buy or sell
             current_value = pd.Series(
-                [self.equity(ticker) for ticker in self._data.tickers],
+                [self.get_equity(ticker) for ticker in self._data.tickers],
                 index=self._data.tickers,
             )
             value_diff = value_allocation - current_value
@@ -1745,7 +1747,11 @@ class _Broker:
         """
         return (price or self.last_price(ticker)) * (1 + copysign(self._spread, size))
 
-    def equity(self, ticker: str = None) -> float:
+    @property
+    def equity(self) -> float:
+        return self._cash + sum(trade.pl for trade in self.all_trades)
+
+    def get_equity(self, ticker: str = None) -> float:
         if ticker:
             # return current value of the asset
             return sum(trade.value for trade in self.trades[ticker])
@@ -1755,10 +1761,8 @@ class _Broker:
     @property
     def margin_available(self) -> float:
         # From https://github.com/QuantConnect/Lean/pull/3768
-        margin_used = sum(
-            abs(trade.value) / self._leverage for trade in self.all_trades
-        )
-        return max(0, self.equity() - margin_used)
+        margin_used = sum(trade.value / self._leverage for trade in self.all_trades)
+        return max(0, self.equity - margin_used)
 
     @property
     def all_trades(self) -> List[Trade]:
@@ -1793,8 +1797,8 @@ class _Broker:
         self._process_orders()
 
         # Log account equity for the equity curve
-        total_equity = self.equity()
-        ticker_equity = [self.equity(ticker) for ticker in self._data.tickers]
+        total_equity = self.equity
+        ticker_equity = [self.get_equity(ticker) for ticker in self._data.tickers]
         equity = [total_equity, *ticker_equity, self.margin_available]
         self._equity[i] = equity
 
@@ -2164,7 +2168,7 @@ class Backtest:
                  finalize_trades=False,
                  trade_start_date=None,
                  lot_size=1,
-                 fail_fast=True,
+                 fail_fast=False,
                  storage: dict | None = None
                  ):
         if not (isinstance(strategy, type) and issubclass(strategy, Strategy)):
@@ -2480,8 +2484,7 @@ class Backtest:
         maximize_key = None
         if isinstance(maximize, str):
             maximize_key = str(maximize)
-            stats = self._results if self._results is not None else self.run()
-            if maximize not in stats:
+            if maximize not in dummy_stats().index:
                 raise ValueError('`maximize`, if str, must match a key in pd.Series '
                                  'result of backtest.run()')
 
@@ -2589,7 +2592,6 @@ class Backtest:
         def _optimize_sambo() -> Union[pd.Series,
                                        Tuple[pd.Series, pd.Series],
                                        Tuple[pd.Series, pd.Series, dict]]:
-
             try:
                 import sambo
             except ImportError:
@@ -2670,24 +2672,14 @@ class Backtest:
     @staticmethod
     def _mp_task(arg):
         bt, data_shm, params_batch = arg
-        # shms_to_close will store the list of SharedMemory objects opened by shm2df
-        df, shms_to_close = SharedMemoryManager.shm2df(data_shm)
-        bt._data = df # Assign the reconstructed DataFrame to the Backtest instance
+        bt._data, shm = SharedMemoryManager.shm2df(*data_shm)
         try:
-            results = [stats.filter(regex='^[^_]') if stats['# Trades'] else None
+            return [stats.filter(regex='^[^_]') if stats['# Trades'] else None
                        for stats in (bt.run(**params)
                                      for params in params_batch)]
-            return results
         finally:
-            # Explicitly close the shared memory segments opened in this worker
-            for shmem in shms_to_close:
-                try:
+            for shmem in shm:
                     shmem.close()
-                except Exception:
-                    # Log or warn about failure to close, but don't stop execution
-                    import warnings
-                    warnings.warn(f"Worker failed to close shared memory {getattr(shmem, 'name', 'unknown')}", ResourceWarning)
-            # bt._data = None # Optional: Clear reference if needed, though process exit should handle it
 
     def plot(self, *, results: pd.Series = None, filename=None, plot_width=None,
         plot_equity=True, plot_return=False, plot_pl=True,

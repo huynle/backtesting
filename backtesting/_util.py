@@ -533,9 +533,11 @@ SharedMemory = _mpshm.SharedMemory
 
 class SharedMemoryManager:
     """
-    A simple shared memory contextmanager based on
-    https://docs.python.org/3/library/multiprocessing.shared_memory.html#multiprocessing.shared_memory.SharedMemory
+    A shared memory contextmanager that supports MultiIndex DataFrames.
     """
+
+    _DF_INDEX_PREFIX = '__bt_index_'  # Prefix for MultiIndex levels
+
     def __init__(self, create=False) -> None:
         self._shms: list[SharedMemory] = []
         self.__create = create
@@ -552,29 +554,15 @@ class SharedMemoryManager:
         return self
 
     def __exit__(self, *args, **kwargs):
-        # Reverse the list to potentially close/unlink dependencies last, although unlikely needed here.
-        # More importantly, handle close and unlink separately for better error isolation.
-        for shm in reversed(self._shms):
+        for shm in self._shms:
             try:
                 shm.close()
-            except Exception as e:
-                # Log closing error but continue attempting to unlink if needed
-                warnings.warn(f'Failed to close shared memory {getattr(shm, "name", "unknown")}: {e!r}',
-                              category=ResourceWarning, stacklevel=2)
-
-            # Only attempt unlink if this manager instance created the segment
-            if getattr(shm, '_create', False): # Check the flag set during creation
-                try:
+                if shm._create:
                     shm.unlink()
-                except FileNotFoundError:
-                    # This can happen if another process already unlinked it,
-                    # or if it failed to be created properly in the first place. Benign.
-                    pass
-                except Exception as e:
-                    # Log other unlink errors
-                    warnings.warn(f'Failed to unlink shared memory {getattr(shm, "name", "unknown")}: {e!r}',
-                                  category=ResourceWarning, stacklevel=2)
-                    # Decide whether to raise based on policy, currently just warns
+            except Exception:
+                warnings.warn(f'Failed to unlink shared memory {shm.name!r}',
+                              category=ResourceWarning, stacklevel=2)
+                raise
 
     def arr2shm(self, vals):
         """Array to shared memory. Returns (shm_name, shape, dtype) used for restore."""
@@ -588,10 +576,29 @@ class SharedMemoryManager:
         return shm.name, vals.shape, vals.dtype
 
     def df2shm(self, df):
-        return tuple((
+        """
+        Converts a DataFrame (including MultiIndex) to shared memory.
+        Returns a tuple containing column data and index level data.
+        """
+        data = []
+
+        # Handle the index (including MultiIndex)
+        if isinstance(df.index, pd.MultiIndex):
+            index_data = []
+            for i, level in enumerate(df.index.levels):
+                index_name = f"{self._DF_INDEX_PREFIX}{i}"
+                index_data.append((index_name, *self.arr2shm(level)))
+        else:
+            index_data = [(f"{self._DF_INDEX_PREFIX}0", *self.arr2shm(df.index))]
+
+        # Handle columns
+        column_data = tuple(
             (column, *self.arr2shm(values))
-            for column, values in chain([(self._DF_INDEX_COL, df.index)], df.items())
-        ))
+            for column, values in df.items()
+        )
+
+        return column_data, index_data
+
 
     @staticmethod
     def shm2s(shm, shape, dtype) -> pd.Series:
@@ -599,54 +606,43 @@ class SharedMemoryManager:
         arr.setflags(write=False)
         return pd.Series(arr, dtype=dtype)
 
-    _DF_INDEX_COL = '__bt_index'
 
     @staticmethod
-    def shm2df(data_shm):
-        index_data = None
-        data_dict = {}
-        shms_to_close = [] # Keep track of opened shms to close them
+    def shm2df(column_data, index_data):
+        """
+        Reconstructs a DataFrame (including MultiIndex) from shared memory.
+        """
+        # Create shared memory objects for column and index data
+        column_shms = [SharedMemory(name=name, create=False, track=False) for _, name, _, _ in column_data]
+        index_shms = [SharedMemory(name=name, create=False, track=False) for _, name, _, _ in index_data]
 
-        try:
-            for item in data_shm:
-                col, name, shape, dtype = item
-                # Create SharedMemory instance for reading
-                shm = SharedMemory(name=name, create=False)
-                shms_to_close.append(shm) # Add to list for cleanup
-                # Read data into a Series (which copies the data from buffer)
-                arr = SharedMemoryManager.shm2s(shm, shape, dtype)
-                # Now that data is copied, we can close the shm handle in this worker
-                # shm.close() # Close immediately after reading - moved to finally block
+        # Reconstruct columns
+        df = pd.DataFrame({
+            col: SharedMemoryManager.shm2s(shm, shape, dtype)
+            for shm, (col, _, shape, dtype) in zip(column_shms, column_data)
+        })
 
-                if col == SharedMemoryManager._DF_INDEX_COL:
-                    index_data = arr.copy() # Explicitly copy
-                else:
-                    data_dict[col] = arr.copy() # Explicitly copy
+        # Reconstruct index
+        index_levels = []
+        index_names = []
+        for shm, (index_name, _, shape, dtype) in zip(index_shms, index_data):
+            index_level = SharedMemoryManager.shm2s(shm, shape, dtype)
+            index_levels.append(index_level)
+            index_names.append(None)  # Index names are not stored in shared memory in this example
 
-            if index_data is None:
-                raise ValueError("Index data not found in shared memory bundle.")
+        if len(index_levels) > 1:  # MultiIndex
+            df.index = pd.MultiIndex.from_product(index_levels, names=index_names)
+        else:  # Single Index
+            df.index = index_levels[0]
+            df.index.name = None
 
-            df = pd.DataFrame(data_dict)
+        all_shms = column_shms + index_shms
 
-            # Check if original columns were MultiIndex tuples based on the keys stored
-            if data_dict and all(isinstance(c, tuple) for c in data_dict.keys()):
-                 # Ensure columns are sorted correctly if necessary, though dict order is preserved >= 3.7
-                 df.columns = pd.MultiIndex.from_tuples(sorted(df.columns)) # Sort for consistency
+        return df, all_shms
 
-            # Reconstruct index
-            df.index = index_data
-            df.index.name = None  # Restore original state (index name is not stored)
 
-            # Return only the DataFrame. The worker's job with SHM is done.
-            return df, [] # Return empty list as shms are closed here
-        finally:
-            # Ensure all opened shared memory segments are closed in this worker
-            for shm in shms_to_close:
-                try:
-                    shm.close()
-                except Exception:
-                    # Log or warn about failure to close if necessary, but continue
-                    pass # Avoid masking original error if one occurred
+
+
 
 
 
