@@ -95,11 +95,9 @@ def _data_period(index) -> Union[pd.Timedelta, Number]:
 
 
 def _strategy_indicators(strategy):
-    result = {}
-    for attr, indicator in strategy.__dict__.items():
-        if isinstance(indicator, _Indicator):
-            result[attr] = indicator
-    return result.items()
+    return {attr: indicator
+            for attr, indicator in strategy.__dict__.items()
+            if isinstance(indicator, _Indicator)}.items()
 
 
 def _indicator_warmup_nbars(strategy):
@@ -195,7 +193,6 @@ class _Data:
         self._ta = _TA(self.__df)
         self._update()
 
-
     def __getitem__(self, item):
         return self._get_array(item)
 
@@ -269,7 +266,6 @@ class _Data:
                     raise KeyError(f"Column '{key}' not in data")
         return arr
     
-
     @property
     def Open(self) -> _Array:
         if len(self._tickers) > 1:
@@ -550,13 +546,13 @@ else:
 
 class SharedMemoryManager:
     """
-    A shared memory contextmanager that supports MultiIndex DataFrames.
+    A simple shared memory contextmanager based on
+    https://docs.python.org/3/library/multiprocessing.shared_memory.html#multiprocessing.shared_memory.SharedMemory
     """
-
     _DF_INDEX_PREFIX = '__bt_index_'  # Prefix for MultiIndex levels
-
-    def __init__(self) -> None:
+    def __init__(self, create=False) -> None:
         self._shms: list[SharedMemory] = []
+        self.__create = create
 
     def SharedMemory(self, *, name=None, create=False, size=0, track=True):
         shm = SharedMemory(name=name, create=create, size=size, track=track)
@@ -596,7 +592,6 @@ class SharedMemoryManager:
         Converts a DataFrame (including MultiIndex) to shared memory.
         Returns a tuple containing column data and index level data.
         """
-        data = []
 
         # Handle the index (including MultiIndex)
         if isinstance(df.index, pd.MultiIndex):
@@ -635,8 +630,7 @@ class SharedMemoryManager:
         # Reconstruct columns
         df = pd.DataFrame({
             col: SharedMemoryManager.shm2s(shm, shape, dtype)
-            for shm, (col, _, shape, dtype) in zip(column_shms, column_data)
-        })
+            for shm, (col, _, shape, dtype) in zip(column_shms, column_data)})
 
         # Reconstruct index
         index_levels = []
@@ -651,16 +645,8 @@ class SharedMemoryManager:
         else:  # Single Index
             df.index = index_levels[0]
             df.index.name = None
-
-        all_shms = column_shms + index_shms
-
-        return df, all_shms
-
-
-
-
-
-
+        _shm = column_shms + index_shms
+        return df, _shm
 
 
 class PicklableAnalysisIndicators(AnalysisIndicators):

@@ -1476,19 +1476,19 @@ class Trade:
     @property
     def pl(self):
         """Trade profit (positive) or loss (negative) in cash units."""
-        price = self.__exit_price or self.__broker.last_price(self.__ticker)
+        price = self.__exit_price or self.__broker.get_last_price(self.__ticker)
         return self.__size * (price - self.__entry_price)
 
     @property
     def pl_pct(self):
         """Trade profit (positive) or loss (negative) in percent."""
-        price = self.__exit_price or self.__broker.last_price(self.__ticker)
+        price = self.__exit_price or self.__broker.get_last_price(self.__ticker)
         return copysign(1, self.__size) * (price / self.__entry_price - 1) if self.__entry_price != 0 else np.nan
 
     @property
     def value(self):
         """Trade total value in cash (volume × price)."""
-        price = self.__exit_price or self.__broker.last_price(self.__ticker)
+        price = self.__exit_price or self.__broker.get_last_price(self.__ticker)
         return abs(self.__size) * price
 
     # SL/TP management API
@@ -1525,9 +1525,7 @@ class Trade:
 
     def __set_contingent(self, type, price):
         assert type in ('sl', 'tp')
-        # assert price is None or 0 < price < np.inf, f'Make sure 0 < price < inf! price: {price}'
-        if not (price is None or 0 < price < np.inf):
-            raise AssertionError(f'Make sure 0 < price < inf! price: {price}')
+        assert price is None or 0 < price < np.inf, f'Make sure 0 < price < inf! price: {price}'
         attr = f'_{self.__class__.__qualname__}__{type}_order'
         order: Order = getattr(self, attr)
         if order:
@@ -1668,7 +1666,7 @@ class _Broker:
                         # implicitly this forces order in whole share, fractional share not supported for now
                         size = (
                             value_diff[ticker]
-                            // self.last_price(ticker)
+                            // self.get_last_price(ticker)
                             // self._lot_size
                             * self._lot_size
                         )
@@ -1736,7 +1734,12 @@ class _Broker:
 
         return order
 
-    def last_price(self, ticker) -> float:
+    @property
+    def last_price(self) -> float:
+        """Price at the last (current) close."""
+        return self._data[self._data.the_ticker, "Close"][-1]
+
+    def get_last_price(self, ticker) -> float:
         """Price at the last (current) close."""
         return self._data[ticker, "Close"][-1]
 
@@ -1745,7 +1748,7 @@ class _Broker:
         Long/short `price`, adjusted for commisions.
         In long positions, the adjusted price is a fraction higher, and vice versa.
         """
-        return (price or self.last_price(ticker)) * (1 + copysign(self._spread, size))
+        return (price or self.get_last_price(ticker)) * (1 + copysign(self._spread, size))
 
     @property
     def equity(self) -> float:
@@ -1781,7 +1784,7 @@ class _Broker:
         # Close any remaining open trades so they produce some stats
         final_orders = [trade.close(finalize=True) for trade in self.all_trades]
         for order in final_orders:
-            price = self.last_price(order.ticker)
+            price = self.get_last_price(order.ticker)
             time_index = len(self._data) - 1
             trade = order.parent_trade
             _prev_size = trade.size
@@ -1803,10 +1806,10 @@ class _Broker:
         self._equity[i] = equity
 
         # If equity is negative, set all to 0 and stop the simulation
-        if equity[0] <= 0:
+        if total_equity <= 0:
             assert self.margin_available <= 0
             for trade in self.all_trades:
-                self._close_trade(trade, self.last_price(trade.ticker), i)
+                self._close_trade(trade, self.get_last_price(trade.ticker), i)
             self._cash = 0
             self._equity[i:] = 0
             raise _OutOfMoneyError
@@ -2052,12 +2055,11 @@ class Backtest:
     Backtest a particular (parameterized) strategy
     on particular data.
 
-    Upon initialization, call method
+    Initialize a backtest. Requires data and a strategy to test.
+    After initialization, you can call method
     `backtesting.backtesting.Backtest.run` to run a backtest
     instance, or `backtesting.backtesting.Backtest.optimize` to
     optimize it.
-
-    Initialize a backtest. Requires data and a strategy to test.
 
     `data` is a `pd.DataFrame` with 2-level columns:
     1st level is a list of tickers, and
@@ -2067,7 +2069,7 @@ class Backtest:
     e.g.
 
         df['Open'] = df['High'] = df['Low'] = df['Close']
-        df['Volumn'] = 0
+        df['Volume'] = 0
 
     The passed data frame can contain additional columns that
     can be used by the strategy (e.g. sentiment info).

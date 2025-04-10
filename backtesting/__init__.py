@@ -85,8 +85,11 @@ def Pool(processes=None, initializer=None, initargs=()):
             "which might be slightly slower for non-numpy / non-GIL-releasing code. "
             "See https://github.com/kernc/backtesting.py/issues/1256",
             category=RuntimeWarning, stacklevel=3)
+        from multiprocessing.dummy import Pool
         if platform.system() in ["Darwin", "Linux"]:
-            return mp.Pool(processes, initializer, initargs)
-        return mp.Pool(processes, initializer, initargs)
+            # Pool = mp.Pool
+            return Pool(processes, initializer, initargs)
+
+        return Pool(processes, initializer, initargs)
     else:
         return mp.Pool(processes, initializer, initargs)
