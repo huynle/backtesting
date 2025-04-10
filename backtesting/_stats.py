@@ -217,8 +217,10 @@ class _Stats(pd.Series):
 def dummy_stats(_data=None):
     from .backtesting import Trade, _Broker, _Data
     if _data is None:
+        # Create a multi-level DataFrame
         index = pd.DatetimeIndex(['2025'])
-        _data = pd.DataFrame({col: [np.nan] for col in ('Close',)}, index=index)
+        _data = pd.DataFrame({('Asset1', 'Close'): [10], ('Asset2', 'Close'): [20]}, index=index)
+        # _data = pd.DataFrame({col: [np.nan] for col in ('Close',)}, index=index)
     data = _Data(_data.copy(deep=False))
     _broker = _Broker(data=data, cash=10000, spread=.01, commission=.01, margin=.1,
                           trade_on_close=True, hedging=True, exclusive_orders=False,
@@ -234,4 +236,13 @@ def dummy_stats(_data=None):
         .bfill()
         .fillna(_broker._cash)
     )
-    return compute_stats(orders=[], trades=[trade], equity=equity, ohlc_data=data, strategy_instance=None, risk_free_rate=0,)
+
+    weights = 1 / _data.xs("Close", axis=1, level=1).iloc[0]
+    weighted_data = _data.copy()
+    # weighted_data = weighted_data.loc[:, (slice(None), ohlc)]
+    for ticker in weights.index:
+        weighted_data[ticker] = weighted_data[ticker] * weights[ticker]
+    weighted_data = weighted_data.T.groupby(level=1).agg("sum").T / weights.sum()
+    _ohlc_ref_data = weighted_data
+
+    return compute_stats(orders=[], trades=[trade], equity=equity, ohlc_data=_ohlc_ref_data, strategy_instance=None, risk_free_rate=0,)
