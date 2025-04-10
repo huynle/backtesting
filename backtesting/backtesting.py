@@ -2413,7 +2413,7 @@ class Backtest:
 
     def optimize(self, *,
                  maximize: Union[str, Callable[[pd.Series], float]] = 'SQN',
-                 method: str = 'grid',
+                 method: str = 'sambo',
                  max_tries: Optional[Union[int, float]] = None,
                  constraint: Optional[Callable[[dict], bool]] = None,
                  return_heatmap: bool = False,

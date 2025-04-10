@@ -549,7 +549,7 @@ class SharedMemoryManager:
     A simple shared memory contextmanager based on
     https://docs.python.org/3/library/multiprocessing.shared_memory.html#multiprocessing.shared_memory.SharedMemory
     """
-    _DF_INDEX_PREFIX = '__bt_index_'  # Prefix for MultiIndex levels
+
     def __init__(self, create=False) -> None:
         self._shms: list[SharedMemory] = []
         self.__create = create
@@ -589,27 +589,20 @@ class SharedMemoryManager:
 
     def df2shm(self, df):
         """
-        Converts a DataFrame (including MultiIndex) to shared memory.
-        Returns a tuple containing column data and index level data.
+        Converts a DataFrame to shared memory. Handles MultiIndex columns.
+        Returns a tuple containing:
+            - A tuple of tuples, where each inner tuple represents a column (or index)
+              and contains: (column_name, shm_name, shape, dtype).  column_name
+              will be a tuple for MultiIndex columns.
+            - A tuple containing the names of the columns.  For MultiIndex, this will
+              be a tuple of tuples.
         """
-
-        # Handle the index (including MultiIndex)
-        if isinstance(df.index, pd.MultiIndex):
-            index_data = []
-            for i, level in enumerate(df.index.levels):
-                index_name = f"{self._DF_INDEX_PREFIX}{i}"
-                index_data.append((index_name, *self.arr2shm(level)))
-        else:
-            index_data = [(f"{self._DF_INDEX_PREFIX}0", *self.arr2shm(df.index))]
-
-        # Handle columns
-        column_data = tuple(
+        column_names = tuple(df.columns)
+        data = tuple(
             (column, *self.arr2shm(values))
-            for column, values in df.items()
+            for column, values in chain([(self._DF_INDEX_COL, df.index)], df.items())
         )
-
-        return column_data, index_data
-
+        return data, column_names
 
     @staticmethod
     def shm2s(shm, shape, dtype) -> pd.Series:
@@ -617,36 +610,45 @@ class SharedMemoryManager:
         arr.setflags(write=False)
         return pd.Series(arr, dtype=dtype)
 
+    _DF_INDEX_COL = '__bt_index'
 
     @staticmethod
-    def shm2df(column_data, index_data):
+    def shm2df(data_shm, column_names):
         """
-        Reconstructs a DataFrame (including MultiIndex) from shared memory.
+        Reconstructs a DataFrame from shared memory, handling MultiIndex columns.
+        Args:
+            data_shm: The tuple returned by df2shm.
+            column_names: The tuple of column names returned by df2shm.
+        Returns:
+            A tuple containing the reconstructed DataFrame and a list of SharedMemory
+            objects that need to be unlinked.
         """
-        # Create shared memory objects for column and index data
-        column_shms = [SharedMemory(name=name, create=False, track=False) for _, name, _, _ in column_data]
-        index_shms = [SharedMemory(name=name, create=False, track=False) for _, name, _, _ in index_data]
+        shm_list = [SharedMemory(name=name, create=False, track=False) for _, name, _, _ in data_shm]
+        
+        # Reconstruct the DataFrame data.  Skip the index column.
+        data = {}
+        shms = iter(shm_list)
+        index_shm = next(shms) # first shm is the index
+        index_col, _, index_shape, index_dtype = data_shm[0]
 
-        # Reconstruct columns
-        df = pd.DataFrame({
-            col: SharedMemoryManager.shm2s(shm, shape, dtype)
-            for shm, (col, _, shape, dtype) in zip(column_shms, column_data)})
+        for col in column_names:
+            shm = next(shms)
+            col_data = next(x for x in data_shm if x[0] == col)
+            _, _, shape, dtype = col_data
+            data[col] = SharedMemoryManager.shm2s(shm, shape, dtype)
 
-        # Reconstruct index
-        index_levels = []
-        index_names = []
-        for shm, (index_name, _, shape, dtype) in zip(index_shms, index_data):
-            index_level = SharedMemoryManager.shm2s(shm, shape, dtype)
-            index_levels.append(index_level)
-            index_names.append(None)  # Index names are not stored in shared memory in this example
+        df = pd.DataFrame(data)
 
-        if len(index_levels) > 1:  # MultiIndex
-            df.index = pd.MultiIndex.from_product(index_levels, names=index_names)
-        else:  # Single Index
-            df.index = index_levels[0]
-            df.index.name = None
-        _shm = column_shms + index_shms
-        return df, _shm
+        #Reconstruct the index
+        df.index = SharedMemoryManager.shm2s(index_shm, index_shape, index_dtype)
+        df.index.name = None
+        
+        # Set the index name if it was set
+        if index_col != SharedMemoryManager._DF_INDEX_COL:
+            df.index.name = index_col
+
+        return df, shm_list
+
 
 
 class PicklableAnalysisIndicators(AnalysisIndicators):
