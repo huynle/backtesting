@@ -2206,12 +2206,9 @@ class Backtest:
 
         # Check if 'Volume' exists; add it if it doesn't
         if 'Volume' not in data.columns.levels[1]:
-            # Add 'Volume' to each ticker with NaN values
+            # Add 'Volume' to each ticker with 0 values and int64 dtype
             for ticker in data.columns.levels[0]:
-                data[(ticker, 'Volume')] = np.nan
-            # Update the levels of the MultiIndex to include 'Volume'
-            levels = [data.columns.levels[0], pd.Index(['Open', 'High', 'Low', 'Close', 'Volume'])]
-            data.columns = pd.MultiIndex.from_product(levels)
+                data[ticker, 'Volume'] = np.nan  # Fill with 0 instead of NaN
 
         # Verify that the DataFrame contains all required columns ('Open', 'High', 'Low', 'Close', 'Volume')
         if not set(data.columns.levels[1]).issuperset(ohlc):

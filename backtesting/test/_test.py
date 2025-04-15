@@ -10,6 +10,7 @@ from glob import glob
 from runpy import run_path
 from tempfile import NamedTemporaryFile, gettempdir
 from unittest import TestCase
+import pytest
 
 import numpy as np
 import pandas as pd
@@ -1332,3 +1333,30 @@ class TestBacktestMulti(object):
         bt = Backtest(MULTI_ASSET_DATA, MultiStrategy, cash=1_000_000)
         bt.run()
         # bt.plot()
+    
+
+class TestDataConditioning:
+
+
+    @pytest.fixture
+    def data(self):
+        df = pd.DataFrame({
+            'Open': [1, 2, 3, 4, 5],
+            'High': [2, 3, 4, 5, 6],
+            'Low': [3, 4, 5, 6, 7],
+            'Close': [4, 5, 6, 7, 8]
+        }, index=pd.date_range('2020-01-01', periods=5))
+        df = pd.concat([df]*3, axis=1, keys=['A', 'B', 'C'])
+        return df
+
+    def test_fill_volume(self, data):
+        """ Test that multiindex columns can have volumes be properly filled out
+        """
+        class Simple(Strategy):
+            def init(self):
+                pass
+            def next(self):
+                pass
+
+        bt = Backtest(data, Simple)
+        assert bt
