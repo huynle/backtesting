@@ -333,6 +333,37 @@ class _Data:
         """Returns the technical analysis accessor for the data."""
         return self._ta
 
+    def get_ticker_data(self, ticker=None) -> pd.DataFrame:
+        """
+        Returns a DataFrame for a specific ticker or the default ticker if none specified.
+        
+        Parameters:
+        -----------
+        ticker : str, optional
+            The ticker symbol to retrieve data for. If not provided, uses the default ticker.
+            
+        Returns:
+        --------
+        pd.DataFrame
+            A DataFrame containing data for the specified ticker with all columns from the second level.
+        
+        Raises:
+        -------
+        ValueError
+            If no ticker is provided and multiple tickers exist in the data.
+        KeyError
+            If the specified ticker does not exist in the data.
+        """
+        if ticker is None:
+            # Use the default ticker if none provided
+            ticker = self.the_ticker
+        
+        # Check if the ticker exists
+        if ticker not in self._tickers:
+            raise KeyError(f"Ticker '{ticker}' not found in data. Available tickers: {self._tickers}")
+        
+        # Return the DataFrame for the specified ticker
+        return self.__df[ticker]
 
 class _IndexerWrapper:
     """Helper class to wrap pandas indexers (iloc, loc) and simplify columns of the result if needed."""
