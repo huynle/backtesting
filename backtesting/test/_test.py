@@ -554,6 +554,7 @@ class TestStrategy(TestCase):
 class TestOptimize(TestCase):
     def test_optimize(self):
         bt = Backtest(GOOG.iloc[:100], SmaCross)
+        self.maxDiff = None
         OPT_PARAMS = {'fast': range(2, 5, 2), 'slow': [2, 5, 7, 9]}
 
         self.assertRaises(ValueError, bt.optimize)
