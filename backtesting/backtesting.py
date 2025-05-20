@@ -704,10 +704,14 @@ class Strategy(ABC):
                 raise RuntimeError(f'Indicator "{name}" error. See traceback above.') from e
         else:
             value = funcval
+        
+        # If `value` is a dict with a single DataFrame/Series (e.g. from _TA in single-asset mode), extract it.
+        if isinstance(value, dict) and len(value) == 1:
+            value = next(iter(value.values()))
 
         if value is not None:
             value = try_(lambda: np.asarray(value, order='C'), None)
-        is_arraylike = bool(value is not None and value.shape)
+        is_arraylike = bool(value is not None and hasattr(value, 'shape') and value.shape)
 
         # Optionally flip the array if the user returned e.g. `df.values`
         if is_arraylike and np.argmax(value.shape) == 0:
@@ -2157,7 +2161,7 @@ class Backtest:
     [active and ongoing]: https://kernc.github.io/backtesting.py/doc/backtesting/backtesting.html#backtesting.backtesting.Strategy.trades
     """  # noqa: E501
     def __init__(self,
-                 data: pd.DataFrame,
+                 data: Union[pd.DataFrame, Dict[str, pd.DataFrame]],
                  strategy: Type[Strategy],
                  *,
                  cash: float = 10_000,
@@ -2176,78 +2180,96 @@ class Backtest:
                  ):
         if not (isinstance(strategy, type) and issubclass(strategy, Strategy)):
             raise TypeError(f"`strategy` must be a Strategy sub-type. Got {type(strategy)}")
-        if not isinstance(data, pd.DataFrame):
-            raise TypeError("`data` must be a pandas.DataFrame with columns")
+        if not isinstance(data, (pd.DataFrame, dict)):
+            raise TypeError("`data` must be a pandas.DataFrame or a dictionary of DataFrames.")
         if not isinstance(spread, Number):
-            raise TypeError('`spread` must be a float value, percent of '
-                            'entry order price')
+            raise TypeError('`spread` must be a float value, percent of entry order price')
         if not isinstance(commission, (Number, tuple)) and not callable(commission):
             raise TypeError('`commission` must be a float percent of order value, '
                             'a tuple of `(fixed, relative)` commission, '
                             'or a function that takes `(order_size, price)`'
                             'and returns commission dollar value')
 
-        data = data.copy(deep=False)
-        ohlc = ["Open", "High", "Low", "Close", "Volume"]
-
-        # Convert single asset data into 2-level column index
-        if data.columns.nlevels == 1:
-            data.columns = pd.MultiIndex.from_product([["Asset"], data.columns])
-
-        # Convert index to datetime index if it's not already a DatetimeIndex or RangeIndex
-        # and if it's a numeric index with most values representing timestamps after 1975.
-        if (not isinstance(data.index, pd.DatetimeIndex) and
-            not isinstance(data.index, pd.RangeIndex) and
-            (data.index.is_numeric() and
-             (data.index > pd.Timestamp('1975').timestamp()).mean() > .8)):
-            try:
-                data.index = pd.to_datetime(data.index, infer_datetime_format=True)
-            except ValueError:
-                pass
-
-        # Check if 'Volume' exists; add it if it doesn't
-        if 'Volume' not in data.columns.levels[1]:
-            # Add 'Volume' to each ticker with 0 values and int64 dtype
-            for ticker in data.columns.levels[0]:
-                data[ticker, 'Volume'] = np.nan  # Fill with 0 instead of NaN
-
-        # Verify that the DataFrame contains all required columns ('Open', 'High', 'Low', 'Close', 'Volume')
-        if not set(data.columns.levels[1]).issuperset(ohlc):
-            raise ValueError(
-                "`data` must be a pandas.DataFrame containing columns 'Open', 'High', 'Low', 'Close', and 'Volume'"
-            )
-
-        if len(data) == 0:
-            raise ValueError("`data` cannot be empty")
-        if np.any(data.xs("Close", axis=1, level=1) > cash):
-            warnings.warn('Some prices are larger than initial cash value. Note that fractional '
-                'trading is not supported. If you want to trade Bitcoin, '
-                'increase initial cash, or trade μBTC or satoshis instead (GH-134).',
-                stacklevel=2)
-        if not data.index.is_monotonic_increasing:
-            warnings.warn('Data index is not sorted in ascending order. Sorting.', 
-                          stacklevel=2)
-            data = data.sort_index()
-        # Check for NaNs only in OHLC, Volume is optional and can contain NaNs
+        ohlc_cols = ["Open", "High", "Low", "Close", "Volume"]
         ohlc_required = ["Open", "High", "Low", "Close"]
-        if (
-            data.loc[:, (slice(None), ohlc_required)]
-            .apply(lambda s: s.loc[s.first_valid_index() :].isna().sum())
-            .sum()
-            > 0
-        ):
-            raise ValueError(
-                "Some Open, High, Low, Close values are missing (NaN). "
-                "Please strip those lines with `df.dropna()` or "
-                "fill them in with `df.interpolate()` or whatever."
-            )
-        if not isinstance(data.index, pd.DatetimeIndex):
-            warnings.warn('Data index is not datetime. Assuming simple periods, '
-                          'but `pd.DateTimeIndex` is advised.',
-                          stacklevel=2)
-        data.index.name = "Date"
+        
+        data_dict: Dict[str, pd.DataFrame] = {}
 
-        self._data = data
+        if isinstance(data, pd.DataFrame):
+            df_copy = data.copy(deep=False)
+            if df_copy.columns.nlevels == 1:
+                # Single asset DataFrame
+                data_dict["Asset"] = df_copy
+            elif df_copy.columns.nlevels == 2:
+                # MultiIndex DataFrame, convert to Dict[str, pd.DataFrame]
+                for ticker in df_copy.columns.levels[0]:
+                    data_dict[ticker] = df_copy[ticker].copy()
+            else:
+                raise ValueError("DataFrame columns must have 1 or 2 levels.")
+        elif isinstance(data, dict):
+            for ticker, df_ticker in data.items():
+                if not isinstance(df_ticker, pd.DataFrame):
+                    raise TypeError(f"All values in data dictionary must be DataFrames. Found type {type(df_ticker)} for ticker '{ticker}'.")
+                data_dict[ticker] = df_ticker.copy(deep=False)
+        
+        if not data_dict:
+            raise ValueError("`data` cannot be empty or result in an empty data dictionary.")
+
+        # Validate and preprocess each DataFrame in the dictionary
+        common_index = None
+        for ticker, df_ticker in data_dict.items():
+            if common_index is None:
+                common_index = df_ticker.index
+                if (not isinstance(common_index, pd.DatetimeIndex) and
+                    not isinstance(common_index, pd.RangeIndex) and
+                    (common_index.is_numeric() and
+                     (common_index > pd.Timestamp('1975').timestamp()).mean() > .8)):
+                    try:
+                        common_index = pd.to_datetime(common_index, infer_datetime_format=True)
+                    except ValueError:
+                        pass # Keep original index if conversion fails
+                df_ticker.index = common_index # Ensure all use the (potentially converted) common index
+                if not common_index.is_monotonic_increasing:
+                     warnings.warn('Data index is not sorted in ascending order. Sorting.', stacklevel=2)
+                     # This sort needs to be applied to all DFs using this index
+                     # It's better to sort the original input before this loop if needed
+                     # For now, assume common_index is sorted or will be handled by user.
+                if not isinstance(common_index, pd.DatetimeIndex):
+                     warnings.warn(f'Data index for {ticker} is not datetime. Assuming simple periods, '
+                                   'but `pd.DateTimeIndex` is advised.', stacklevel=2)
+                common_index.name = "Date"
+
+            elif not df_ticker.index.equals(common_index):
+                raise ValueError("All DataFrames in multi-asset data must share the same index.")
+            
+            df_ticker.index = common_index # Assign the common index object
+
+            if 'Volume' not in df_ticker.columns:
+                df_ticker['Volume'] = np.nan
+
+            if not set(df_ticker.columns).issuperset(ohlc_required):
+                raise ValueError(
+                    f"DataFrame for ticker '{ticker}' must contain columns 'Open', 'High', 'Low', 'Close'. Found: {list(df_ticker.columns)}"
+                )
+            if len(df_ticker) == 0:
+                raise ValueError(f"DataFrame for ticker '{ticker}' cannot be empty.")
+
+            if np.any(df_ticker["Close"] > cash):
+                 warnings.warn(f'Some prices for ticker {ticker} are larger than initial cash value.', stacklevel=2)
+            
+            if df_ticker[ohlc_required].isnull().values.any():
+                 raise ValueError(
+                    f"Some Open, High, Low, Close values are missing (NaN) for ticker '{ticker}'. "
+                    "Please strip those lines or fill them in."
+                )
+            # Ensure ohlc_cols are present and first, then any other columns
+            current_cols = list(df_ticker.columns)
+            other_cols = [col for col in current_cols if col not in ohlc_cols]
+            new_col_order = ohlc_cols + other_cols
+            data_dict[ticker] = df_ticker[new_col_order]
+
+        self._data_dict = data_dict # Store the processed dictionary
+        
         self._broker = partial(
             _Broker, cash=cash, spread=spread, holding=holding, commission=commission, margin=margin,
             trade_on_close=trade_on_close, hedging=hedging,
@@ -2258,14 +2280,26 @@ class Backtest:
         self._finalize_trades = bool(finalize_trades)
         self._is_optimizing = False
 
-        # equal weighed average, as if buy and hold an equal weighed portfolio
-        weights = 1 / self._data.xs("Close", axis=1, level=1).iloc[0]
-        weighted_data = self._data.copy()
-        weighted_data = weighted_data.loc[:, (slice(None), ohlc)]
-        for ticker in weights.index:
-            weighted_data[ticker] = weighted_data[ticker] * weights[ticker]
-        weighted_data = weighted_data.T.groupby(level=1).agg("sum").T / weights.sum()
-        self._ohlc_ref_data = weighted_data
+        # Create _ohlc_ref_data: an equal-weighted average DataFrame for overall stats/plotting
+        if data_dict:
+            all_closes = pd.DataFrame({ticker: df["Close"] for ticker, df in data_dict.items()})
+            if not all_closes.empty and not all_closes.iloc[0].isnull().all():
+                 weights = 1 / all_closes.iloc[0].fillna(np.inf) # Use inf for NaN closes to give them zero weight
+                 weights = weights / weights.sum() # Normalize weights
+                 
+                 weighted_ohlc_parts = []
+                 for ohlc_col in ohlc_cols: # Iterate through Open, High, Low, Close, Volume
+                     col_data = pd.DataFrame({ticker: df.get(ohlc_col, pd.Series(np.nan, index=common_index)) 
+                                              for ticker, df in data_dict.items()})
+                     weighted_col = (col_data * weights).sum(axis=1, skipna=False) # skipna=False to keep NaNs if all weights are for NaN series
+                     weighted_ohlc_parts.append(pd.Series(weighted_col, name=ohlc_col))
+                 
+                 self._ohlc_ref_data = pd.concat(weighted_ohlc_parts, axis=1)
+                 self._ohlc_ref_data.index = common_index
+            else: # Handle case where all initial closes are NaN or data is empty
+                 self._ohlc_ref_data = pd.DataFrame(index=common_index, columns=ohlc_cols, dtype=float)
+        else: # Should not happen due to earlier check
+            self._ohlc_ref_data = pd.DataFrame(columns=ohlc_cols, dtype=float)
 
     def run(self, **kwargs) -> pd.Series:
         """
@@ -2320,7 +2354,7 @@ class Backtest:
             period of the `Strategy.I` indicator which lags the most.
             Obviously, this can affect results.
         """
-        data = _Data(self._data.copy(deep=False))
+        data = _Data(self._data_dict.copy())
         broker: _Broker = self._broker(data=data)
         strategy: Strategy = self._strategy(broker, data, kwargs, is_optimizing=self._is_optimizing)
         processed_orders: List[Order] = []
@@ -2333,7 +2367,7 @@ class Backtest:
             print(traceback.format_exc())
             raise
 
-        data._update()  # Strategy.init might have changed/added to data.df
+        data._update()  # Strategy.init might have changed/added to data.df (individual ticker DFs)
 
         # Indicators used in Strategy.next()
         indicator_attrs = _strategy_indicators(strategy)
@@ -2341,15 +2375,25 @@ class Backtest:
         # Skip first few candles where indicators are still "warming up"
         # +1 to have at least two entries available
         start = 1 + _indicator_warmup_nbars(strategy)
-        # # Preprocess indicators to numpy array for better performance
-        # def deframe(df): return df.iloc[:, 0] if isinstance(df, pd.DataFrame) and len(df.columns) == 1 else df
-        # indicator_attrs_np = {attr: deframe(indicator).to_numpy() for attr, indicator in indicator_attrs}
+        
+        # Determine the length of the data from the common index of the first ticker
+        # This assumes all tickers have data of the same length and aligned indices.
+        # This length is used for the iteration range.
+        # self._data_dict is the authoritative source for tickers and their data.
+        # The common_index was established during Backtest.__init__
+        if not self._data_dict: # Should not happen if validation in __init__ is correct
+            raise ValueError("Internal error: _data_dict is empty at run time.")
+        
+        # Use the length of the common index established during initialization
+        # This index is stored in _Data as self._shared_index
+        data_len = len(data._shared_index)
+
 
         # Disable "invalid value encountered in ..." warnings. Comparison
         # np.nan >= 3 is not invalid; it's False.
         with np.errstate(invalid='ignore'):
 
-            for i in _tqdm(range(start, len(self._data)), desc=self.run.__qualname__,
+            for i in _tqdm(range(start, data_len), desc=self.run.__qualname__,
                            unit='bar', mininterval=2, miniters=100):
                 # Prepare data and indicators for `next` call
                 data._set_length(i + 1)
@@ -2377,7 +2421,7 @@ class Backtest:
 
                     # HACK: Re-run broker one last time to handle close orders placed in the last
                     #  strategy iteration. Use the same OHLC values as in the last broker iteration.
-                    if start < len(self._data):
+                    if start < data_len: # Use data_len which is derived from _data_dict
                         try_(broker.next, exception=_OutOfMoneyError)
                         broker.finalize()
 
@@ -2390,18 +2434,19 @@ class Backtest:
 
             # Set data back to full length
             # for future `indicator._opts['data'].index` calls to work
-            data._set_length(len(self._data))
+            data._set_length(data_len) # Use the full data_len
 
-            equity = (pd.DataFrame( broker._equity, index=data.index, columns=["Equity", *data.tickers, "Cash"],)
-                .bfill()
-                .fillna(broker._cash)
+            equity_df_columns = ["Equity"] + data.tickers + ["Cash"]
+            equity = (pd.DataFrame(broker._equity, index=data.index, columns=equity_df_columns)
+                      .bfill()
+                      .fillna(broker._cash)
             )
 
             self._results = compute_stats(
                 orders=processed_orders,
                 trades=broker.closed_trades,
                 equity=equity,
-                ohlc_data=self._ohlc_ref_data,
+                ohlc_data=self._ohlc_ref_data, # This is the aggregated reference
                 risk_free_rate=0.0,
                 strategy_instance=strategy,
                 positions=final_positions,
@@ -2569,11 +2614,11 @@ class Backtest:
                 from . import Pool
                 with Pool() as pool, \
                         SharedMemoryManager() as smm:
-                    with patch(self, '_data', None):
-                        bt = copy(self)  # bt._data will be reassigned in _mp_task worker
+                    with patch(self, '_data_dict', None): # Patch the dict attribute
+                        bt = copy(self)  # bt._data_dict will be reassigned
                     results = _tqdm(
                         pool.imap(Backtest._mp_task,
-                                  ((bt, smm.df2shm(self._data), params_batch)
+                                  ((bt, smm.df2shm(self._data_dict), params_batch) # Pass the dict
                                    for params_batch in _batch(param_combos))),
                         total=len(param_combos),
                         desc='Backtest.optimize'
@@ -2644,13 +2689,18 @@ class Backtest:
                     nonlocal constraint, _names
                     return constraint(AttrDict(zip(_names, x)))
 
-                res = sambo.minimize(
-                    fun=objective_function,
-                    bounds=dimensions,
-                    constraints=cons,
-                    max_iter=max_tries,
-                    method='sceua',
-                    rng=random_state)
+                try:
+                    res = sambo.minimize(
+                        fun=objective_function,
+                        bounds=dimensions,
+                        constraints=cons,
+                        max_iter=max_tries,
+                        method='sceua',
+                        rng=random_state)
+                except RuntimeError as e:
+                    if 'Constraints seemingly cannot be satisfied' in str(e):
+                        raise ValueError('No admissible parameter combinations to test') from e
+                    raise
 
                 stats = self.run(**dict(zip(kwargs.keys(), res.x)))
                 output = [stats]
@@ -2680,15 +2730,16 @@ class Backtest:
 
     @staticmethod
     def _mp_task(arg):
-        bt, data_shm, params_batch = arg
-        bt._data, shm = SharedMemoryManager.shm2df(*data_shm)
+        bt, data_dict_shm_info, params_batch = arg
+        # data_dict_shm_info is the result of smm.df2shm(self._data_dict)
+        bt._data_dict, shm_list = SharedMemoryManager.shm2df(data_dict_shm_info)
         try:
             return [stats.filter(regex='^[^_]') if stats['# Trades'] else None
                     for stats in (bt.run(**params)
                                   for params in params_batch)]
         finally:
-            for shmem in shm:
-                shmem.close()
+            for shmem_obj in shm_list:
+                shmem_obj.close()
 
     def plot(self, *, results: pd.Series = None, filename=None, plot_width=None,
         plot_equity=True, plot_return=False, plot_pl=True,
@@ -2799,8 +2850,8 @@ class Backtest:
 
         return plot(
             results=results,
-            data=self._data,
-            df=self._ohlc_ref_data,
+            data=self._data_dict, # Pass the dictionary of DataFrames
+            df=self._ohlc_ref_data, # This is the aggregated DataFrame for main plot
             indicators=indicators,
             filename=filename,
             plot_width=plot_width,

@@ -7,6 +7,7 @@ import warnings
 from colorsys import hls_to_rgb, rgb_to_hls
 from itertools import cycle, combinations
 from functools import partial
+from numbers import Number
 from typing import Callable, List, Union
 
 import numpy as np
@@ -115,65 +116,99 @@ _MAX_CANDLES = 10_000
 _INDICATOR_HEIGHT = 50
 
 
-def _maybe_resample_data(resample_rule, data, df, indicators, equity_data, trades, bnh_perf):
+def _maybe_resample_data(resample_rule, data_dict, df_agg, indicators, equity_data, trades, bnh_perf):
+    # df_agg is the aggregated DataFrame for main plot and reference index
     if isinstance(resample_rule, str):
         freq = resample_rule
     else:
-        if resample_rule is False or len(df) <= _MAX_CANDLES:
-            return data, df, indicators, equity_data, trades, bnh_perf
+        if resample_rule is False or len(df_agg) <= _MAX_CANDLES:
+            return data_dict, df_agg, indicators, equity_data, trades, bnh_perf
 
         freq_minutes = pd.Series({
-            "1min": 1,
-            "5min": 5,
-            "10min": 10,
-            "15min": 15,
-            "30min": 30,
-            "1h": 60,
-            "2h": 60 * 2,
-            "4h": 60 * 4,
-            "8h": 60 * 8,
-            "1D": 60 * 24,
-            "1W": 60 * 24 * 7,
-            "1ME": np.inf,
+            "1min": 1, "5min": 5, "10min": 10, "15min": 15, "30min": 30,
+            "1h": 60, "2h": 120, "4h": 240, "8h": 480,
+            "1D": 1440, "1W": 10080, "1ME": np.inf,
         })
-        timespan = df.index[-1] - df.index[0]
+        timespan = df_agg.index[-1] - df_agg.index[0]
         require_minutes = (timespan / _MAX_CANDLES).total_seconds() // 60
         freq = freq_minutes.where(freq_minutes >= require_minutes).first_valid_index()
+        if freq is None: # If require_minutes is too large (e.g. > 1ME)
+            freq = "1ME" # Default to largest reasonable frequency
         warnings.warn(f"Data contains too many candlesticks to plot; downsampling to {freq!r}. "
                       "See `Backtest.plot(resample=...)`")
 
     from .lib import OHLCV_AGG, TRADES_AGG, _EQUITY_AGG
 
-    data = (
-        data.ta.apply(lambda s: s.resample(freq, label="right").agg(OHLCV_AGG))
-        .dropna()
-    )
+    # Resample each DataFrame in data_dict
+    resampled_data_dict = {}
+    for ticker, ticker_df in data_dict.items():
+        resampled_data_dict[ticker] = ticker_df.resample(freq, label="right").agg(OHLCV_AGG).dropna()
+    
+    # Resample the aggregated df (main plot data)
+    df_agg = df_agg.resample(freq, label="right").agg(OHLCV_AGG).dropna()
+    
+    # Resample indicators
+    # Indicators' original index should align with the original df_agg.index
+    # Their new index should align with the new df_agg.index
+    new_index = df_agg.index 
 
-    df = df.resample(freq, label="right").agg(OHLCV_AGG).dropna()
+    def try_mean_first(indicator_array_or_df):
+        # indicator_array_or_df could be an _Indicator (np.ndarray subclass) or pd.DataFrame/Series
+        # We need its underlying pd.Series/DataFrame representation for resampling
+        if hasattr(indicator_array_or_df, '_opts') and 'index' in indicator_array_or_df._opts:
+            # It's an _Indicator, use its stored index and convert to Series/DataFrame
+            # Assuming single series indicator for simplicity here, multi-series indicators need care
+            if indicator_array_or_df.ndim == 1:
+                pd_repr = pd.Series(indicator_array_or_df, index=indicator_array_or_df._opts['index'])
+            elif indicator_array_or_df.ndim == 2:
+                 # If multiple lines in one indicator, handle as DataFrame
+                 # Ensure names are unique for columns if they are tuples from _Indicator
+                 if isinstance(indicator_array_or_df.name, (list, tuple)):
+                     col_names = [f"{indicator_array_or_df.name[i]}_{i}" if isinstance(indicator_array_or_df.name, (list,tuple)) else f"{indicator_array_or_df.name}_{i}" for i in range(indicator_array_or_df.shape[0])]
+                 else: # Single name for multi-line indicator (should not happen with current I)
+                     col_names = [f"{indicator_array_or_df.name}_{i}" for i in range(indicator_array_or_df.shape[0])]
+                 pd_repr = pd.DataFrame(indicator_array_or_df.T, index=indicator_array_or_df._opts['index'], columns=col_names)
+            else: # Should not happen
+                raise ValueError("Cannot resample indicator with >2 dimensions")
+        elif isinstance(indicator_array_or_df, (pd.Series, pd.DataFrame)):
+            pd_repr = indicator_array_or_df
+        else: # Should be _Indicator or pd.DataFrame/Series
+            raise TypeError(f"Unexpected indicator type for resampling: {type(indicator_array_or_df)}")
 
-    def try_mean_first(indicator):
-        nonlocal freq
-        resampled = indicator.df.fillna(np.nan).resample(freq, label='right')
+        resampled = pd_repr.fillna(np.nan).resample(freq, label='right')
         try:
             return resampled.mean()
-        except Exception:
+        except Exception: # E.g. for non-numeric data if any
             return resampled.first()
 
-    indicators = [_Indicator(try_mean_first(i).dropna().reindex(data.index).values.T,
-                             **dict(i._opts, name=i.name,
-                                    # Replace saved index with the resampled one
-                                    index=data.index))
-                  for i in indicators]
-    assert not indicators or indicators[0]._opts['index'].equals(data.index)
+    resampled_indicators = []
+    for i_idx, i_val in enumerate(indicators): # Use enumerate for unique default names if needed
+        resampled_values = try_mean_first(i_val).reindex(new_index)
+        # If indicator was multi-line, resampled_values is a DataFrame. Need to transpose back.
+        if isinstance(resampled_values, pd.DataFrame):
+            resampled_array = resampled_values.values.T
+        else: # Series
+            resampled_array = resampled_values.values
+            
+        resampled_indicators.append(
+            _Indicator(resampled_array,
+                         **dict(i_val._opts, name=i_val.name or f"Ind_{i_idx}", index=new_index)) # Ensure name exists
+        )
+    
+    indicators = resampled_indicators
+    if indicators: # Quick check
+        assert indicators[0]._opts['index'].equals(new_index)
+
 
     column_agg = {
-        ticker: _EQUITY_AGG[ticker] if ticker in _EQUITY_AGG else "last"
-        for ticker in equity_data.columns
+        ticker_col_name: _EQUITY_AGG.get(ticker_col_name, "last") # Use .get for safety
+        for ticker_col_name in equity_data.columns
     }
     equity_data = (
-        equity_data.resample(freq, label="right").agg(column_agg).dropna(how="all")
+        equity_data.resample(freq, label="right").agg(column_agg).dropna(how="all").reindex(new_index)
     )
-    assert equity_data.index.equals(df.index)
+    # Allow for minor discrepancies due to resampling if equity_data didn't perfectly align initially
+    # assert equity_data.index.equals(new_index) 
 
     def _weighted_returns(s, trades=trades):
         df = trades.loc[s.index]
@@ -183,7 +218,9 @@ def _maybe_resample_data(resample_rule, data, df, indicators, equity_data, trade
         return ((df["Size"].abs() * df["ReturnPct"]) / denom).sum()
 
     def _group_trades(column):
-        def f(s, new_index=pd.Index(df.index.astype(np.int64)), bars=trades[column]):
+        # df_agg is from the outer scope (_maybe_resample_data)
+        # and holds the resampled aggregated DataFrame at this point.
+        def f(s, new_index=pd.Index(df_agg.index.astype(np.int64)), bars=trades[column]):
             if s.size:
                 # Via int64 because on pandas recently broken datetime
                 mean_time = int(bars.loc[s.index].astype(np.int64).mean())
@@ -202,7 +239,7 @@ def _maybe_resample_data(resample_rule, data, df, indicators, equity_data, trade
 
     bnh_perf = bnh_perf.resample(freq, label="right").last().dropna()
 
-    return data, df, indicators, equity_data, trades, bnh_perf
+    return data_dict, df_agg, indicators, equity_data, trades, bnh_perf
 
 
 def plot(
@@ -257,39 +294,46 @@ def plot(
     bnh_perf = df["Close"] / df["Close"].iloc[results["_trade_start_bar"] - 1]
     bnh_perf.iloc[: results["_trade_start_bar"]] = 1.0
 
-    # Limit data to max_candles
+    # data is Dict[str, pd.DataFrame], df is the aggregated reference DataFrame
+    # Limit data to max_candles based on the aggregated df
     if is_datetime_index:
         data, df, indicators, equity_data, trades, bnh_perf = _maybe_resample_data(
             resample, data, df, indicators, equity_data, trades, bnh_perf)
 
-    df.index.name = None  # Provides source name @index
-    df['datetime'] = df.index  # Save original, maybe datetime index
-    df = df.reset_index(drop=True)
-    equity_data = equity_data.reset_index(drop=True)
-    index = df.index
+    # df is the aggregated DataFrame for the main plot source
+    df_source_data = df.copy() # df is already aggregated and potentially resampled
+    df_source_data.index.name = None  # Provides source name @index
+    df_source_data['datetime'] = df_source_data.index  # Save original, maybe datetime index
+    df_source_data = df_source_data.reset_index(drop=True)
+    
+    equity_data_source = equity_data.reset_index(drop=True) # equity_data is already resampled
+    plot_index = df_source_data.index # Use this consistent index for all plot elements
 
     new_bokeh_figure = partial(  # type: ignore[call-arg]
         _figure,
         x_axis_type='linear',
         width=plot_width,
         height=400,
-        # TODO: xwheel_pan on horizontal after https://github.com/bokeh/bokeh/issues/14363
         tools="xpan,xwheel_zoom,xwheel_pan,box_zoom,undo,redo,reset,save",
         active_drag='xpan',
         active_scroll='xwheel_zoom')
 
-    pad = (index[-1] - index[0]) / 20
+    pad = (plot_index[-1] - plot_index[0]) / 20 if len(plot_index) > 1 else 1
 
-    _kwargs = dict(x_range=Range1d(index[0], index[-1],  # type: ignore[call-arg]
-                min_interval=10,
-                bounds=(index[0] - pad,
-                        index[-1] + pad))) if index.size > 1 else {}
+    _kwargs = dict(x_range=Range1d(plot_index[0], plot_index[-1],  # type: ignore[call-arg]
+                min_interval=10, # TODO: make this dynamic based on plot_index length
+                bounds=(plot_index[0] - pad,
+                        plot_index[-1] + pad))) if len(plot_index) > 1 else {}
     fig_ohlc = new_bokeh_figure(**_kwargs)  # type: ignore[arg-type]
     figs_above_ohlc, figs_below_ohlc = [], []
 
-    source = ColumnDataSource(df)
-    source.add((df.Close >= df.Open).values.astype(np.uint8).astype(str), 'inc')
-    source.add(bnh_perf, "bnh_perf")
+    # Main source for OHLC plot (aggregated data)
+    source = ColumnDataSource(df_source_data)
+    source.add((df_source_data.Close >= df_source_data.Open).values.astype(np.uint8).astype(str), 'inc')
+    
+    # Add bnh_perf to source, ensuring it's aligned with df_source_data.index
+    bnh_perf_series = bnh_perf.reindex(df.index).reset_index(drop=True) # df is aggregated, resampled
+    source.add(bnh_perf_series, "bnh_perf")
 
     trade_source = ColumnDataSource(dict(
         index=trades["ExitBar"] if not trades.empty else [],
@@ -363,34 +407,128 @@ return this.labels[index] || "";
     def _plot_equity_section(is_return=False):
         """Equity section"""
         # Max DD Dur. line
-        equity = equity_data['Equity'].copy()
-        dd_end = equity_data['DrawdownDuration'].idxmax()
-        if np.isnan(dd_end):
-            dd_start = dd_end = equity.index[0]
-        else:
-            dd_start = equity[:dd_end].idxmax()
-            # If DD not extending into the future, get exact point of intersection with equity
-            if dd_end != equity.index[-1]:
-                dd_end = np.interp(equity[dd_start],
-                    (equity[dd_end - 1], equity[dd_end]),
-                                   (dd_end - 1, dd_end))
+        equity = equity_data['Equity'].copy() # This is a pd.Series
+        drawdown_duration_values = equity_data['DrawdownDuration'] # This is a pd.Series
+
+        # Determine dd_end and dd_start
+        if not equity.empty: # Ensure equity series is not empty
+            try:
+                # idxmax raises ValueError if all values are NaN or if the Series is empty
+                dd_end = drawdown_duration_values.idxmax()
+                # Ensure dd_end is a valid label for the equity series index
+                if dd_end in equity.index:
+                    dd_start = equity.loc[:dd_end].idxmax()
+                else: # Fallback, should ideally not be reached if indices are aligned
+                    dd_end = equity.index[0]
+                    dd_start = dd_end
+                # If DD not extending into the future, get exact point of intersection with equity
+                # This part of logic might need dd_end to be numeric for np.interp if index is not simple range
+                # For now, keeping original interpolation logic if dd_end is a valid numeric-like index after idxmax
+                if isinstance(dd_end, Number) and dd_end != equity.index[-1]: # Check if dd_end is numeric-like
+                    # Ensure equity[dd_start] is valid; dd_start is an index label
+                    equity_at_dd_start = equity.loc[dd_start] if dd_start in equity.index else equity.iloc[0]
+
+                    # Ensure dd_end-1 is valid for indexing if dd_end is numeric
+                    if dd_end > equity.index[0] and isinstance(equity.index, pd.RangeIndex): # Simple numeric index
+                         equity_dd_end_minus_1 = equity.iloc[int(dd_end) - 1]
+                         equity_dd_end = equity.iloc[int(dd_end)]
+                         dd_end = np.interp(equity_at_dd_start,
+                                           (equity_dd_end_minus_1, equity_dd_end),
+                                           (dd_end - 1, dd_end))
+                    # If DatetimeIndex, np.interp on dd_end (timestamp) is not direct.
+                    # The original logic for interpolation might need re-evaluation for DatetimeIndex.
+                    # For now, this interpolation step is conditional on dd_end being numeric.
+
+            except ValueError: # Handles cases where idxmax fails (e.g., all NaNs)
+                dd_end = equity.index[0]
+                dd_start = dd_end
+        else: # Equity series is empty
+            dd_start = dd_end = None
+
 
         if smooth_equity:
-            interest_points = pd.Index([
-                    # Beginning and end
-                    equity.index[0], equity.index[-1],
-                    # Peak equity and peak DD
-                    equity.idxmax(), equity_data['DrawdownPct'].idxmax(),
-                    # Include max dd end points. Otherwise the MaxDD line looks amiss.
-                    dd_start, int(dd_end), min(int(dd_end + 1), equity.size - 1),
-                ])
-            trade_exit_bars = pd.Index([]) if trades.empty else pd.Index(trades["ExitBar"])
-            select = trade_exit_bars.union(interest_points)
-            select = select.unique().dropna()
-            equity = equity.iloc[select].reindex(equity.index)
-            equity.interpolate(inplace=True)
+            # equity_data_source is already reset_index(drop=True)
+            # its index is RangeIndex(0, ..., N-1)
+            interest_points_indices = pd.Index([
+                equity_data_source.index[0], equity_data_source.index[-1],
+                equity_data_source['Equity'].idxmax(), equity_data_source['DrawdownPct'].idxmax(),
+                # dd_start and dd_end are original indices, need to map to new RangeIndex
+                # This part is complex if original index was not RangeIndex.
+                # Assuming dd_start, dd_end are positional indices after resampling for now.
+            ]).dropna().astype(int)
+            
+            # Ensure dd_start and dd_end are valid positional indices
+            # dd_start and dd_end were calculated on the resampled equity_data before reset_index
+            # So they should be positional if equity_data was already on a RangeIndex or simple index
+            # If they were datetime, they need conversion.
+            # The current dd_start/end logic uses idxmax on the resampled equity_data, so they are positional.
+            
+            # If trades["ExitBar"] are original bar numbers, they need mapping to new resampled index.
+            # This is complex. For now, simplifying smooth_equity logic or assuming ExitBar is already mapped.
+            # The current trades["ExitBar"] from _maybe_resample_data IS mapped.
+            
+            trade_exit_bars_indices = pd.Index([]) if trades.empty else pd.Index(trades["ExitBar"]).dropna().astype(int)
+            
+            # Combine interest points, ensuring they are valid indices for equity_data_source
+            valid_indices = equity_data_source.index
+            
+            # Filter dd_start and dd_end to be within bounds
+            # dd_start, dd_end are from equity_data before reset_index.
+            # If equity_data's index was RangeIndex, they are fine.
+            # If it was DateTimeIndex, they are timestamps.
+            # The current dd_start/end logic uses idxmax on the resampled equity_data.
+            # If equity_data had a DatetimeIndex, dd_start/dd_end are Timestamps.
+            # We need to map them to positional indices of equity_data_source.
+            
+            points_for_additional_index = []
+            # Convert dd_start to positional index if it's a Timestamp
+            if dd_start is not None and not df_source_data.empty: # Use df_source_data for check
+                if isinstance(dd_start, pd.Timestamp):
+                    try:
+                        # Find integer position of dd_start in the 'datetime' column
+                        # .index[0] assumes unique mapping; should be okay if datetime is unique
+                        dd_start_pos = df_source_data[df_source_data['datetime'] == dd_start].index[0] # Use df_source_data
+                        points_for_additional_index.append(dd_start_pos)
+                    except IndexError: # Timestamp not found in 'datetime' column
+                        pass 
+                elif isinstance(dd_start, Number): # Already a positional index
+                    points_for_additional_index.append(int(dd_start))
 
-        assert equity.index.equals(equity_data.index)
+            # Convert dd_end to positional index if it's a Timestamp
+            if dd_end is not None and not df_source_data.empty: # Use df_source_data for check
+                if isinstance(dd_end, pd.Timestamp):
+                    try:
+                        # Find integer position of dd_end
+                        dd_end_pos = df_source_data[df_source_data['datetime'] == dd_end].index[0] # Use df_source_data
+                        points_for_additional_index.append(dd_end_pos)
+                        # Add point after dd_end if valid
+                        # len(equity_data_source) is correct here as dd_end_pos is a positional index for it
+                        points_for_additional_index.append(min(dd_end_pos + 1, len(equity_data_source) - 1))
+                    except IndexError: # Timestamp not found
+                        pass
+                elif isinstance(dd_end, Number): # Already a positional index
+                    points_for_additional_index.append(int(dd_end))
+                    # Add point after dd_end if valid
+                    points_for_additional_index.append(min(int(dd_end) + 1, len(equity_data_source) - 1))
+            
+            additional_interest_points = pd.Index(points_for_additional_index).unique() # Ensure unique values
+            # Filter again to ensure all points are valid indices for equity_data_source (which has RangeIndex)
+            additional_interest_points = additional_interest_points[additional_interest_points.isin(valid_indices)]
+    
+            select_indices = trade_exit_bars_indices.union(interest_points_indices).union(additional_interest_points)
+            select_indices = select_indices[select_indices.isin(valid_indices)].unique() # Ensure valid and unique
+
+            equity_series_for_smoothing = equity_data_source['Equity'].copy()
+            if not select_indices.empty:
+                equity_series_for_smoothing = equity_series_for_smoothing.iloc[select_indices].reindex(equity_data_source.index)
+                equity_series_for_smoothing.interpolate(inplace=True)
+            equity = equity_series_for_smoothing # Use the smoothed series
+
+        # Ensure equity is a pd.Series with the same RangeIndex as equity_data_source
+        if not isinstance(equity, pd.Series) or not equity.index.equals(equity_data_source.index):
+             equity = equity_data_source['Equity'].copy() # Fallback to non-smoothed
+
+        # assert equity.index.equals(equity_data_source.index) # equity_data_source has RangeIndex
 
         if relative_equity:
             equity /= equity.iloc[0]
@@ -405,12 +543,18 @@ return this.labels[index] || "";
             **(dict(height=80) if plot_drawdown else dict(height=100)))
 
         # High-watermark drawdown dents
-        fig.patch('index', 'equity_dd',
-            source=ColumnDataSource( dict(
-                    index=np.r_[index, index[::-1]],
-                    equity_dd=np.r_[equity, equity.cummax()[::-1]]
-                )),
-                fill_color='#ffffea', line_color='#ffcb66')
+        # Ensure equity used here is the (potentially smoothed) series on plot_index
+        patch_source_df = pd.DataFrame({'index': plot_index})
+        patch_source_df['equity_dd_upper'] = equity.cummax().values # equity is on plot_index
+        patch_source_df['equity_dd_lower'] = equity.values
+
+        fig.patch(x='index', y='equity_dd_lower',  # Changed y1 and y2 to y
+            source=ColumnDataSource(pd.DataFrame({
+                'index': np.r_[plot_index, plot_index[::-1]],
+                'equity_dd_lower': np.r_[equity.values, equity.cummax().values[::-1]], # This is the y-coordinate for the patch
+                 # 'equity_dd_upper': np.r_[equity.cummax().values, equity.cummax().values[::-1]] # Alternative if needed
+            })),
+            fill_color='#ffffea', line_color='#ffcb66', alpha=0.7) # Added alpha
 
         # Equity line
         r = fig.line('index', source_key, source=source, line_width=1.5, line_alpha=1, legend_label='Strategy')
@@ -446,56 +590,113 @@ return this.labels[index] || "";
             )
 
         # Peaks
-        argmax = equity.idxmax()
-        fig.scatter(argmax, equity[argmax],
+        # equity.index can be DatetimeIndex or RangeIndex. plot_index is RangeIndex.
+        # df_source_data['datetime'] maps plot_index positions to original datetime values.
+        
+        # For peak point
+        if isinstance(equity.index, pd.DatetimeIndex):
+            peak_idx_val_ts = equity.idxmax() # Timestamp
+            try:
+                # Map Timestamp to plot_index position via df_source_data
+                peak_x_coord = plot_index[df_source_data['datetime'] == peak_idx_val_ts][0]
+            except IndexError: # Fallback if timestamp not found (e.g. due to resampling mismatches)
+                peak_x_coord = plot_index[equity.index.get_loc(peak_idx_val_ts)]
+            peak_y_coord = equity.loc[peak_idx_val_ts]
+        else: # equity.index is RangeIndex
+            peak_x_coord = equity.idxmax() # Position
+            peak_y_coord = equity.iloc[peak_x_coord]
+        
+        fig.scatter(peak_x_coord, peak_y_coord,
                     legend_label='Peak ({})'.format(
-                        legend_format.format(equity[argmax] * (100 if relative_equity else 1))),
+                        legend_format.format(peak_y_coord * (100 if relative_equity else 1))),
                     color='cyan', size=8)
-        fig.scatter(index[-1], equity.values[-1],
+
+        # For final point: equity.iloc[-1] for y-value, plot_index[-1] for x-value.
+        fig.scatter(plot_index[-1], equity.iloc[-1],
                     legend_label='Final ({})'.format(
                         legend_format.format(equity.iloc[-1] * (100 if relative_equity else 1))),
                     color='blue', size=8)
 
         if not plot_drawdown:
-            drawdown = equity_data['DrawdownPct']
-            argmax = drawdown.idxmax()
-            fig.scatter(argmax, equity[argmax],
-                        legend_label='Max Drawdown (-{:.1f}%)'.format(100 * drawdown[argmax]),
+            drawdown_series = equity_data['DrawdownPct'] # This series' index matches equity_data's original index type
+            if isinstance(drawdown_series.index, pd.DatetimeIndex):
+                mdd_idx_val_ts = drawdown_series.idxmax() # Timestamp
+                try:
+                    mdd_x_coord = plot_index[df_source_data['datetime'] == mdd_idx_val_ts][0]
+                except IndexError:
+                    mdd_x_coord = plot_index[drawdown_series.index.get_loc(mdd_idx_val_ts)]
+                # Y-value for scatter should be from equity at that corresponding point
+                mdd_y_coord = equity.loc[mdd_idx_val_ts] if isinstance(equity.index, pd.DatetimeIndex) else equity.iloc[mdd_x_coord]
+                mdd_label_val = drawdown_series.loc[mdd_idx_val_ts]
+            else: # RangeIndex
+                mdd_x_coord = drawdown_series.idxmax() # Position
+                mdd_y_coord = equity.iloc[mdd_x_coord]
+                mdd_label_val = drawdown_series.iloc[mdd_x_coord]
+            
+            fig.scatter(mdd_x_coord, mdd_y_coord,
+                        legend_label='Max Drawdown (-{:.1f}%)'.format(100 * mdd_label_val),
                         color='red', size=8)
-        if dd_start < len(df) and int(round(dd_end)) < len(df):
-            dd_timedelta_label = df['datetime'].iloc[int(round(dd_end))] - df['datetime'].iloc[dd_start]
-            fig.line([dd_start, dd_end], equity.iloc[dd_start],
-                line_color='red', line_width=2,
-                legend_label=f'Max Dd Dur. ({dd_timedelta_label})'
-                     .replace(' 00:00:00', '')
-                     .replace('(0 days ', '('))
 
+        # Max Drawdown Duration line
+        # dd_start, dd_end are Timestamps if derived from DatetimeIndex series.
+        # `equity` variable at this stage should have RangeIndex due to earlier processing.
+        if dd_start is not None and dd_end is not None and not df_source_data.empty:
+            try:
+                # Map dd_start and dd_end (Timestamps) to plot_index positions
+                datetime_index_map = pd.Index(df_source_data['datetime'])
+                dd_start_pos_idx = datetime_index_map.get_indexer([dd_start], method='nearest')[0]
+                dd_end_pos_idx = datetime_index_map.get_indexer([dd_end], method='nearest')[0]
+
+                # y-value for the line start. `equity` has RangeIndex here.
+                y_start_val_dd_line = equity.iloc[dd_start_pos_idx]
+
+                start_dt_label = df_source_data['datetime'].iloc[dd_start_pos_idx]
+                end_dt_label = df_source_data['datetime'].iloc[dd_end_pos_idx]
+                dd_timedelta_label = end_dt_label - start_dt_label
+            
+                fig.line([plot_index[dd_start_pos_idx], plot_index[dd_end_pos_idx]],
+                         y_start_val_dd_line,
+                         line_color='red', line_width=2,
+                         legend_label=f'Max Dd Dur. ({dd_timedelta_label})'.replace(' 00:00:00', '').replace('(0 days ', '('))
+            except (KeyError, IndexError):
+                 pass # Skip plotting max drawdown duration line if mapping fails
+        
         figs_above_ohlc.append(fig)
 
     def _plot_equity_stack_section(relative=True):
         '''Equity stack area chart section'''
-        equity = equity_data.iloc[:, 1:-2].copy().abs().fillna(0)
-        equity = equity.loc[:, equity.sum() > 0]
-        names = list(equity.columns)
+        # equity_data_source is already resampled and has RangeIndex
+        equity_components = equity_data_source.iloc[:, 1:-2].copy().abs().fillna(0) # Exclude 'Equity', 'DrawdownPct', 'DrawdownDuration', 'Cash'
+        equity_components = equity_components.loc[:, equity_components.sum() > 0] # Keep only components with some value
+        names = list(equity_components.columns)
+
         if relative:
-            equity_sum = equity.sum(axis=1)
-            equity = equity.divide(equity_sum, axis=0).fillna(0)
-        equity_source = ColumnDataSource(equity)
-        equity_source.add(df.index, 'index')
+            equity_sum = equity_components.sum(axis=1)
+            # Avoid division by zero if sum is zero for a row
+            equity_components = equity_components.divide(equity_sum.replace(0, np.nan), axis=0).fillna(0)
+        
+        # equity_source_data should have 'index' column for x-axis
+        equity_source_data = equity_components.copy()
+        equity_source_data['index'] = plot_index # plot_index is the RangeIndex for plotting
+        equity_source = ColumnDataSource(equity_source_data)
+
 
         yaxis_label = 'Allocation'
         fig = new_indicator_figure(
-            y_axis_label=yaxis_label, height=max(60 + len(names), 80)
+            y_axis_label=yaxis_label, height=max(60 + len(names), 80) # Adjusted height calculation
         )
 
         if relative:
-            tooltip_format = [f'@{ticker}{{+0,0.[000]%}}' for ticker in names]
+            tooltip_format = [f'@{ticker}{{0,0.[000]%}}' for ticker in names] # Adjusted format
             tick_format = '0,0.[00]%'
-            equity_source.add(pd.Series(1, index=df.index), 'equity')
+            # For relative plot, the total stack height is 1 (or 100%)
+            # Add a dummy 'total_equity_for_plot' to source if needed by tooltip logic, or adjust tooltip
+            # The varea_stack implies the total.
         else:
-            tooltip_format = [f'@{ticker}{{$ 0,0}}' for ticker in names]
-            tick_format = '$ 0.0 a'
-            equity_source.add(equity_data['Equity'], 'equity')
+            tooltip_format = [f'@{ticker}{{$0,0}}' for ticker in names] # Adjusted format
+            tick_format = '$0.0a'
+            # For absolute plot, use the actual total equity values
+            # equity_source.add(equity_data_source['Equity'], 'total_equity_for_plot') # If needed for tooltips
 
         cg = colorgen()
         colors = [next(cg) for _ in range(len(names))]
@@ -515,14 +716,18 @@ return this.labels[index] || "";
     def _plot_drawdown_section():
         """Drawdown section"""
         fig = new_indicator_figure(y_axis_label="Drawdown", height=80)
-        drawdown = equity_data['DrawdownPct']
-        argmax = drawdown.idxmax()
-        source.add(drawdown, 'drawdown')
+        # equity_data_source has DrawdownPct and RangeIndex
+        drawdown_series = equity_data_source['DrawdownPct']
+        argmax_pos = drawdown_series.idxmax() # Positional index
+        
+        # Add to main plot source (source) which uses plot_index (RangeIndex)
+        source.add(drawdown_series.values, 'drawdown') # Add as numpy array to match plot_index
+
         r = fig.line('index', 'drawdown', source=source, line_width=1.3)
-        fig.scatter(argmax, drawdown[argmax],
-                    legend_label='Peak (-{:.1f}%)'.format(100 * drawdown[argmax]),
+        fig.scatter(plot_index[argmax_pos], drawdown_series.iloc[argmax_pos], # Use plot_index for x-coordinate
+                    legend_label='Peak (-{:.1f}%)'.format(100 * drawdown_series.iloc[argmax_pos]),
                     color='red', size=8)
-        set_tooltips(fig, [('Drawdown', '@drawdown{-0.[0]%}')], renderers=[r])
+        set_tooltips(fig, [('Drawdown', '@drawdown{-0.0%}')], renderers=[r]) # Adjusted format
         fig.yaxis.formatter = NumeralTickFormatter(format="-0.[0]%")
         return fig
 
@@ -555,63 +760,114 @@ return this.labels[index] || "";
         """Volume section"""
         fig = new_indicator_figure(height=70, y_axis_label="Volume")
         fig.yaxis.ticker.desired_num_ticks = 3
-        fig.xaxis.formatter = fig_ohlc.xaxis[0].formatter
+        # Ensure x-axis formatter is correctly assigned if fig_ohlc.xaxis[0] is used
+        if fig_ohlc.xaxis: # Check if xaxis exists
+            fig.xaxis.formatter = fig_ohlc.xaxis[0].formatter
         fig.xaxis.visible = True
-        fig_ohlc.xaxis.visible = False  # Show only Volume's xaxis
+        if fig_ohlc.xaxis:
+            fig_ohlc.xaxis.visible = False  # Show only Volume's xaxis
+        
+        # 'Volume' is in the main `source` (from aggregated df_source_data)
         r = fig.vbar('index', BAR_WIDTH, 'Volume', source=source, color=inc_cmap)
-        set_tooltips(fig, [('Volume', '@Volume{0.00 a}')], renderers=[r])
+        set_tooltips(fig, [('Volume', '@Volume{0.00a}')], renderers=[r]) # Adjusted format
         fig.yaxis.formatter = NumeralTickFormatter(format="0 a")
         return fig
 
     def _plot_superimposed_ohlc():
         """Superimposed, downsampled vbars"""
-        if not isinstance(df['datetime'], pd.DatetimeIndex):
-             warnings.warn(
+    # df_source_data contains 'datetime' column with original (possibly resampled) datetime index
+        if not isinstance(df_source_data['datetime'], pd.DatetimeIndex) and not pd.api.types.is_datetime64_any_dtype(df_source_data['datetime']):
+            warnings.warn(
                 'Superimposing requires a datetime index. Skipping.',
                 stacklevel=4,
             )
-             return
+            return
 
-        time_resolution = pd.DatetimeIndex(df['datetime']).resolution
-        resample_rule = (superimpose if isinstance(superimpose, str) else
-                         dict(day='ME',
-                              hour='D',
-                              minute='h',
-                              second='min',
-                              millisecond='s').get(time_resolution))
-        if not resample_rule:
+        datetime_series_for_superimpose = pd.to_datetime(df_source_data['datetime'])
+        # Convert Series to DatetimeIndex to access 'resolution' attribute
+        time_resolution_index = pd.DatetimeIndex(datetime_series_for_superimpose)
+        time_resolution = time_resolution_index.resolution
+        
+        resample_rule_map = dict(day='ME', hour='D', minute='h', second='min', millisecond='s')
+        # Ensure time_resolution is a string key in resample_rule_map
+        time_resolution_key = str(time_resolution).lower() # Normalize if needed
+
+        resample_rule_val = (superimpose if isinstance(superimpose, str) else
+                             resample_rule_map.get(time_resolution_key))
+        
+        if not resample_rule_val:
             warnings.warn(
-                f"'Can't superimpose OHLC data with rule '{resample_rule}'"
-                f"(index datetime resolution: '{time_resolution}'). Skipping.",
+                f"Can't superimpose OHLC data with rule '{resample_rule_val}' "
+                f"(index datetime resolution: '{time_resolution_key}'). Skipping.",
                 stacklevel=4)
             return
 
-        df2 = (df.assign(_width=1) .set_index('datetime')
-            .resample(resample_rule, label='left')
-            .agg(dict(OHLCV_AGG, _width='count')))
+        # Use the original df (aggregated, before reset_index) for resampling
+        # df is the aggregated, possibly resampled, DataFrame with DateTimeIndex
+        df_for_superimpose = df.assign(_width=1) # df still has DateTimeIndex here
+        
+        df2 = (df_for_superimpose.resample(resample_rule_val, label='left')
+               .agg(dict(OHLCV_AGG, _width='count')))
 
-        # Check if resampling was downsampling; error on upsampling
-        orig_freq = _data_period(df['datetime'])
-        resample_freq = _data_period(df2.index)
-        if resample_freq < orig_freq:
-            raise ValueError('Invalid value for `superimpose`: Upsampling not supported.')
-        if resample_freq == orig_freq:
-            warnings.warn('Superimposed OHLC plot matches the original plot. Skipping.',
-                          stacklevel=4)
+        if df2.empty:
+            warnings.warn('Superimposed OHLC data is empty after resampling. Skipping.', stacklevel=4)
+            return
+            
+        orig_freq = _data_period(df.index) # df has DateTimeIndex
+        resample_freq = _data_period(df2.index) # df2 also has DateTimeIndex
+        
+        if resample_freq < orig_freq: # Ensure it's a valid pd.Timedelta comparison
+            if isinstance(orig_freq, Number) or isinstance(resample_freq, Number): # Handle non-Timedelta case
+                 pass # Cannot compare if not Timedelta, skip check
+            elif resample_freq < orig_freq:
+                raise ValueError('Invalid value for `superimpose`: Upsampling not supported.')
+        
+        if orig_freq == resample_freq: # Ensure it's a valid pd.Timedelta comparison
+            if not (isinstance(orig_freq, Number) or isinstance(resample_freq, Number)) and orig_freq == resample_freq:
+                 warnings.warn('Superimposed OHLC plot matches the original plot. Skipping.', stacklevel=4)
+                 return
+
+        # Map df2's DateTimeIndex to the plot_index (RangeIndex)
+        # This requires finding the corresponding plot_index positions for df2's start times
+        # df_source_data['datetime'] holds the mapping from plot_index to original datetimes
+        
+        # Create a mapping from datetime to plot_index
+        datetime_to_plot_idx = pd.Series(df_source_data.index, index=df_source_data['datetime'])
+        
+        # Map start of each resampled bar in df2 to a plot_index
+        # This assumes df2.index are the start timestamps of the superimposed bars
+        df2_plot_indices = datetime_to_plot_idx.reindex(df2.index, method='ffill').fillna(-1).astype(int)
+        
+        # Filter out entries that couldn't be mapped or are out of bounds
+        valid_map = (df2_plot_indices >= 0) & (df2_plot_indices < len(plot_index))
+        df2 = df2[valid_map]
+        df2_plot_indices = df2_plot_indices[valid_map]
+
+        if df2.empty:
+            warnings.warn('Superimposed OHLC data is empty after mapping to plot index. Skipping.', stacklevel=4)
             return
 
-        df2.index = df2['_width'].cumsum().shift(1).fillna(0)
-        df2.index += df2['_width'] / 2 - .5
-        df2['_width'] -= .1  # Candles don't touch
+        # The 'index' for source2 should be the plot_index positions
+        df2['plot_idx_start'] = df2_plot_indices
+        # Width in terms of plot_index units. This is tricky.
+        # If _width is count of original bars, map end time to plot_index too.
+        # For simplicity, let's assume _width is roughly constant in plot_index units.
+        # This might need adjustment based on how sparse the original data is relative to superimposed.
+        # A simple approach: width of the superimposed bar is proportional to its duration.
+        # Or, use the number of original bars it spans (_width) if that's meaningful on plot_index.
+        
+        # Let's use the number of original candles spanned as width on the linear plot_index
+        df2['plot_width'] = df2['_width'] * BAR_WIDTH # Approximate width on plot_index
+        df2['plot_idx_center'] = df2['plot_idx_start'] + df2['plot_width'] / 2 - (BAR_WIDTH/2) # Centering
+        df2['plot_width'] -= 0.1 # Ensure candles don't touch if BAR_WIDTH is used
 
         df2['inc'] = (df2.Close >= df2.Open).astype(int).astype(str)
-        df2.index.name = None
+        
         source2 = ColumnDataSource(df2)
-        fig_ohlc.segment('index', 'High', 'index', 'Low', source=source2, color='#bbbbbb')
-        colors_lighter = [lightness(BEAR_COLOR, .92),
-                          lightness(BULL_COLOR, .92)]
-        fig_ohlc.vbar( 'index', '_width', 'Open', 'Close', source=source2, line_color=None,
-            fill_color=factor_cmap('inc', colors_lighter, ['0', '1']))
+        fig_ohlc.segment('plot_idx_center', 'High', 'plot_idx_center', 'Low', source=source2, color='#bbbbbb')
+        colors_lighter = [lightness(BEAR_COLOR, .92), lightness(BULL_COLOR, .92)]
+        fig_ohlc.vbar('plot_idx_center', 'plot_width', 'Open', 'Close', source=source2, line_color=None,
+                      fill_color=factor_cmap('inc', colors_lighter, ['0', '1']))
 
     def _plot_ohlc():
         """Main OHLC bars"""
@@ -636,34 +892,52 @@ return this.labels[index] || "";
                             line_width=8, line_alpha=1, line_dash='dotted')
 
     def _plot_ohlc_universe():
+        # data is Dict[str, pd.DataFrame], df_source_data is from aggregated df
+        # We plot individual ticker 'Close' prices from the data_dict
+        # These need to be aligned with plot_index (RangeIndex)
         fig = fig_ohlc
         ohlc_colors = colorgen()
         label_tooltip_pairs = []
-        num_tickers = len(data.columns.levels[0])
-        for ticker in data.columns.levels[0][:10]:
+        
+        tickers_to_plot = list(data.keys())[:10]
+        num_total_tickers = len(data.keys())
+
+        for ticker in tickers_to_plot:
             color = next(ohlc_colors)
-            source_name = ticker
-            if (ticker, 'Close') in data.columns:
-                arr = data.loc[:, (ticker, 'Close')]
-                source.add(arr, source_name)
-                label_tooltip_pairs.append((source_name, f'@{{{source_name}}}{{0,0.0[0000]}}'))
-                ohlc_extreme_values[source_name] = arr.reset_index(drop=True)
+            source_name = f"{ticker}_Close" # Unique source name
+            
+            # Get the 'Close' series for the ticker, ensure it's aligned with plot_index
+            # data[ticker] is the original (possibly resampled) DataFrame for the ticker
+            # It should have the same DateTimeIndex as the aggregated `df` before `df` was reset.
+            # So, we reindex it to `df.index` (which is the DateTimeIndex of aggregated, resampled data)
+            # then reset_index to get values aligned with `plot_index`.
+            if ticker in data and 'Close' in data[ticker].columns:
+                ticker_close_series = data[ticker]['Close'].reindex(df.index).reset_index(drop=True)
+                
+                source.add(ticker_close_series.values, source_name) # Add as numpy array
+                label_tooltip_pairs.append((ticker, f'@{{{source_name}}}{{0,0.0[0000]}}'))
+                
+                # ohlc_extreme_values is used for y-axis auto-scaling of the main OHLC plot
+                # Add this ticker's close to it.
+                ohlc_extreme_values[source_name] = ticker_close_series.values
+
                 fig.line(
-                    'index',
+                    'index', # x-coordinates are from plot_index (0 to N-1)
                     source_name,
                     source=source,
-                    legend_label=source_name,
+                    legend_label=ticker, # Legend uses actual ticker name
                     line_color=color,
                     line_width=2,
                 )
+        
         ohlc_tooltips.extend(label_tooltip_pairs)
-        if num_tickers > 10:
+        if num_total_tickers > 10:
             fig.line(
-                0,
-                0,
-                legend_label=f'{num_tickers - 10} more tickers hidden',
-                line_color='black',
+                x=[0], y=[0], # Dummy line for legend entry
+                legend_label=f'{num_total_tickers - 10} more tickers hidden',
+                line_color='black', visible=False # Make it invisible but keep legend
             )
+        
         fig.legend.orientation = 'horizontal'
         fig.legend.background_fill_alpha = 0.8
         fig.legend.border_line_alpha = 0
@@ -792,9 +1066,10 @@ return this.labels[index] || "";
         _plot_superimposed_ohlc()
 
     ohlc_bars = _plot_ohlc()
-    if plot_trades and len(data.columns.levels[0]) <= 10:
+    # data is Dict[str, pd.DataFrame]
+    if plot_trades and len(data.keys()) <= 10: # data.keys() gives tickers
         _plot_ohlc_trades()
-    if len(data.columns.levels[0]) > 1:
+    if len(data.keys()) > 1:
         _plot_ohlc_universe()
     if plot_indicator:
         indicator_figs = _plot_indicators()

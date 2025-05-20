@@ -11,7 +11,7 @@ from multiprocessing import resource_tracker as _mprt
 from multiprocessing import shared_memory as _mpshm
 from numbers import Number
 from threading import Lock
-from typing import Dict, List, Optional, Sequence, Union, cast
+from typing import Dict, List, Optional, Sequence, Union, cast, Tuple, Any
 from pandas_ta import AnalysisIndicators
 
 import numpy as np
@@ -183,122 +183,209 @@ class _Data:
     a two-level column index structure, where the first level represents tickers
     and the second level represents OHLCV columns.
     """
-    def __init__(self, df: pd.DataFrame):
-        self.__df = df
-        self.__len = len(df)  # Current length
+    def __init__(self, data_dict: Dict[str, pd.DataFrame]):
+        self.__df_dict = data_dict
+        self._tickers = list(data_dict.keys())
+        if not self._tickers:
+            raise ValueError("Data dictionary cannot be empty.")
+        
+        # Assume all DataFrames share the same index
+        self._shared_index = data_dict[self._tickers[0]].index
+        self.__len = len(self._shared_index) # Current length
         self.__pip: Optional[float] = None
-        self.__cache: Dict[str, _Array] = {}
-        self.__arrays: Dict[str, _Array] = {}
-        self._tickers = list(self.__df.columns.levels[0])
-        self._ta = _TA(self.__df)
+        self.__cache: Dict[Tuple[str, str], _Array] = {} # Cache for (ticker, column)
+        self.__arrays: Dict[Tuple[str, str], Tuple[np.ndarray, pd.Series]] = {} # Store for (ticker, column)
+        self._ta = _TA(self.__df_dict) # Pass the dictionary
         self._update()
 
-    def __getitem__(self, item):
-        return self._get_array(item)
+    def __getitem__(self, key):
+        if isinstance(key, tuple) and len(key) == 2:
+            ticker, column = key
+            if ticker not in self._tickers:
+                raise KeyError(f"Ticker '{ticker}' not found in data.")
+            if column not in self.__df_dict[ticker].columns:
+                # Check if it's a dynamically added column via self.data.df[ticker]['new_col']
+                # The _update method should handle this if _DataFrameAccessor calls it.
+                # For now, assume direct column access.
+                raise KeyError(f"Column '{column}' not found for ticker '{ticker}'.")
+            return self._get_array(ticker, column)
+        elif isinstance(key, str):
+            if key in self._tickers:
+                # Return a view or accessor for the specific ticker's DataFrame
+                return _DataFrameView(self, key, self.__df_dict[key])
+            elif len(self._tickers) == 1:
+                # Single-asset mode, key is a column name
+                ticker = self.the_ticker
+                if key not in self.__df_dict[ticker].columns:
+                     raise KeyError(f"Column '{key}' not found for ticker '{ticker}'.")
+                return self._get_array(ticker, key)
+            else:
+                # Multi-asset mode, key is a column name - ambiguous
+                # Or key is a ticker name (already handled)
+                raise KeyError(f"Accessing column '{key}' directly is ambiguous in multi-asset mode. Use data[ticker, column_name] or data[ticker]['{key}'].")
+        raise TypeError(f"Invalid key type for _Data: {key}")
+
+    def __setitem__(self, key, value):
+        # This allows self.data['new_key'] = ... in single-asset mode for tests
+        if len(self._tickers) == 1:
+            ticker = self.the_ticker
+            # Delegate to the DataFrame of the single asset
+            # Ensure the value is aligned with the full original index if it's array-like
+            if isinstance(value, (np.ndarray, pd.Series, list)):
+                if len(value) == self.__len: # currently visible length
+                    full_value = pd.Series(np.nan, index=self._shared_index)
+                    full_value.iloc[:self.__len] = value
+                    self.__df_dict[ticker][key] = full_value
+                elif len(value) == len(self._shared_index): # full length
+                    self.__df_dict[ticker][key] = value
+                else:
+                    raise ValueError(f"Length of value ({len(value)}) does not match current data length ({self.__len}) or full data length ({len(self._shared_index)})")
+            else: # scalar
+                self.__df_dict[ticker][key] = value
+            self._update() # Re-cache arrays
+        else:
+            raise TypeError("Direct item assignment on _Data is only supported in single-asset mode. Use data[ticker]['column'] = ... or data.df[ticker]['column'] = ...")
+
 
     def __getattr__(self, item):
-        try:
-            return self._get_array(item)
-        except KeyError:
-            raise AttributeError(f"Column '{item}' not in data") from None
+        # Allows self.data.Close, self.data.Volume etc.
+        if item in ['Open', 'High', 'Low', 'Close', 'Volume']:
+            if len(self._tickers) == 1:
+                return self._get_array(self.the_ticker, item)
+            else:
+                raise AttributeError(f"Accessing `self.data.{item}` is ambiguous in a multi-asset context. Use `self.data[ticker, '{item}']`.")
+        # Allows self.data.CustomColumn in single-asset mode
+        if len(self._tickers) == 1:
+            ticker = self.the_ticker
+            if item in self.__df_dict[ticker].columns:
+                return self._get_array(ticker, item)
+        
+        # Fallback for other attributes like 'pip', 'index', 'now', 'tickers', 'the_ticker', 'ta', 'df'
+        # These should be defined as properties or methods. If not found, raise AttributeError.
+        # This prevents infinite recursion if a property tries to access a non-existent attribute.
+        if f'_{self.__class__.__name__}__{item}' in self.__dict__ or item in self.__dict__:
+            return self.__dict__[item] # Should not happen if properties are used
+
+        raise AttributeError(f"'{type(self).__name__}' object has no attribute '{item}'")
+
 
     def _set_length(self, length):
         self.__len = length
         self.__cache.clear()
 
     def _update(self):
-        # Cache slices of the data as DataFrame/Series for faster access
-        arrays = (
-            {ticker_col: arr for ticker_col, arr in self.__df.items()}
-            | {col: self.__df.xs(col, axis=1, level=1) for col in self.__df.columns.levels[1]}
-            | {ticker: self.__df[ticker] for ticker in self.__df.columns.levels[0]}
-            | {None: self.__df[self.the_ticker] if len(self._tickers) == 1 else self.__df}
-            | {'__index': self.__df.index.copy()}
-        )
-        arrays = {key: df.iloc[:, 0] if isinstance(df, pd.DataFrame) and len(
-            df.columns) == 1 else df for key, df in arrays.items()}
-        # Keep another copy as Numpy array
-        self.__arrays = {key: (df.to_numpy(), df) for key, df in arrays.items()}
+        self.__arrays.clear()
+        for ticker, df_ticker in self.__df_dict.items():
+            for col_name, series in df_ticker.items():
+                self.__arrays[(ticker, col_name)] = (series.to_numpy(), series)
+        # Cache for __index is not strictly needed in __arrays if self._shared_index is used directly
+        # but _get_array expects a tuple from self.__arrays if we were to unify.
+        # For simplicity, self.index property will use self._shared_index.
 
     def __repr__(self):
-        i = min(self.__len, len(self.__df)) - 1
-        index = self.__arrays['__index'][0][i]
-        items = ', '.join(f'{k}={v}' for k, v in self.__df.iloc[i].items())
-        return f'<Data i={i} ({index}) {items}>'
+        i = min(self.__len, len(self._shared_index)) - 1
+        idx_val = self._shared_index[i]
+        
+        if len(self._tickers) == 1:
+            ticker = self.the_ticker
+            items_str = ', '.join(f'{k}={v}' for k, v in self.__df_dict[ticker].iloc[i].items())
+            return f'<Data i={i} ({idx_val}) Ticker: {ticker} {items_str}>'
+        else:
+            return f'<Data i={i} ({idx_val}) Tickers: {self._tickers} (use data[ticker] or data[ticker, column])>'
 
     def __len__(self):
         return self.__len
 
     @property
-    def df(self) -> pd.DataFrame:
+    def df(self) -> Union[pd.DataFrame, Dict[str, pd.DataFrame]]:
         """
-        Returns the underlying DataFrame, either for a single ticker or the full multi-asset DataFrame.
+        Returns the underlying DataFrame for a single ticker, or a dictionary of DataFrames
+        for multi-asset data.
         
-        This property also supports adding new columns to the DataFrame which can then be accessed
-        as attributes of the _Data object.
+        This property also supports adding new columns to the DataFrame(s) which can then be accessed
+        as attributes of the _Data object (for single-asset) or via data[ticker, column_name].
         """
-        # Pass the full original DataFrame reference
-        return _DataFrameAccessor(self, self.__df)
+        if len(self._tickers) == 1:
+            return _DataFrameAccessor(self, self.__df_dict[self.the_ticker], self.the_ticker)
+        return _DataFrameDictAccessor(self, self.__df_dict)
+
 
     @property
     def pip(self) -> float:
         if self.__pip is None:
+            # Calculate pip based on the 'Close' prices of the first ticker
+            # This might need adjustment if pips vary significantly across assets in a multi-asset scenario
+            first_ticker = self._tickers[0]
+            # Ensure the key format matches how __arrays is populated: (ticker, column_name)
+            if (first_ticker, 'Close') in self.__arrays:
+                close_prices_series = self.__arrays[(first_ticker, 'Close')][1]
+            elif 'Close' in self.__df_dict.get(first_ticker, pd.DataFrame()).columns: # Fallback to __df_dict
+                close_prices_series = self.__df_dict[first_ticker]['Close']
+            else:
+                # Fallback or raise error if 'Close' is not found for the first ticker
+                self.__pip = 0.01 # Default pip
+                return self.__pip
+
             self.__pip = float(10**-np.median([len(s.partition('.')[-1])
-                                               for s in self.__arrays['Close'][0].ravel().astype(str)]))
+                                               for s in close_prices_series.astype(str).values]))
         return self.__pip
 
-    def _get_array(self, key) -> _Array:
-        arr = self.__cache.get(key)
+    def _get_array(self, ticker: str, column: str) -> _Array:
+        cache_key = (ticker, column)
+        arr = self.__cache.get(cache_key)
         if arr is None:
             try:
-                array, df = self.__arrays[key]
-                arr = self.__cache[key] = _Array(df.values[:self.__len], name=key, index=self.index)
+                # self.__arrays stores (numpy_array_full_length, pandas_series_full_length)
+                np_array_full, pd_series_full = self.__arrays[cache_key]
+                # Return a view of the numpy array up to the current length __len
+                arr = self.__cache[cache_key] = _Array(np_array_full[:self.__len], name=column, index=self.index)
             except KeyError:
-                # Handle the case where key is not in __arrays
-                # This could be a dynamically added column
-                if key in self.__df.columns.levels[1]:
-                    # For multi-level DataFrame, get all values for this column across tickers
-                    df = self.__df.xs(key, axis=1, level=1)
-                    array = df.to_numpy()
-                    self.__arrays[key] = (array, df)
-                    arr = self.__cache[key] = _Array(df.values[:self.__len], name=key, index=self.index)
-                else:
-                    raise KeyError(f"Column '{key}' not in data")
+                # This might happen if a column was added dynamically and _update wasn't called,
+                # or if the column truly doesn't exist.
+                # The __getitem__ should ideally prevent calls for non-existent static columns.
+                # If it's a new column added via df accessor, _update should have handled it.
+                raise KeyError(f"Array for ticker '{ticker}', column '{column}' not found in internal arrays. Ensure it exists in the input data or was added correctly.")
         return arr
-    
+
     @property
     def Open(self) -> _Array:
         if len(self._tickers) > 1:
             raise ValueError("Accessing `self.data.Open` is ambiguous in a multi-asset context. Use `self.data[ticker, 'Open']`.")
-        return self._get_array((self.the_ticker, 'Open'))
+        return self._get_array(self.the_ticker, 'Open')
 
     @property
     def High(self) -> _Array:
         if len(self._tickers) > 1:
             raise ValueError("Accessing `self.data.High` is ambiguous in a multi-asset context. Use `self.data[ticker, 'High']`.")
-        return self._get_array((self.the_ticker, 'High'))
+        return self._get_array(self.the_ticker, 'High')
 
     @property
     def Low(self) -> _Array:
         if len(self._tickers) > 1:
             raise ValueError("Accessing `self.data.Low` is ambiguous in a multi-asset context. Use `self.data[ticker, 'Low']`.")
-        return self._get_array((self.the_ticker, 'Low'))
+        return self._get_array(self.the_ticker, 'Low')
 
     @property
     def Close(self) -> _Array:
         if len(self._tickers) > 1:
             raise ValueError("Accessing `self.data.Close` is ambiguous in a multi-asset context. Use `self.data[ticker, 'Close']`.")
-        return self._get_array((self.the_ticker, 'Close'))
+        return self._get_array(self.the_ticker, 'Close')
 
     @property
     def Volume(self) -> _Array:
         if len(self._tickers) > 1:
             raise ValueError("Accessing `self.data.Volume` is ambiguous in a multi-asset context. Use `self.data[ticker, 'Volume']`.")
-        return self._get_array((self.the_ticker, 'Volume'))
+        # Volume might be optional, handle if not present for the ticker
+        if 'Volume' not in self.__df_dict[self.the_ticker].columns:
+             # Return an array of NaNs or zeros if Volume is missing
+             # This matches behavior if Volume column was all NaNs
+             vol_data = np.full(self.__len, np.nan)
+             return _Array(vol_data, name='Volume', index=self.index)
+        return self._get_array(self.the_ticker, 'Volume')
 
     @property
     def index(self) -> pd.DatetimeIndex:
-        return self.__df.index[:self.__len]
+        return self._shared_index[:self.__len]
 
     # Make pickling in Backtest.optimize() work with our catch-all __getattr__
     def __getstate__(self):
@@ -383,168 +470,118 @@ class _DataFrameAccessor:
     A wrapper around DataFrame that updates the _Data object's cache when new columns are added.
     Provides sliced view for __getitem__ and delegates other methods.
     """
-    def __init__(self, data_obj, original_df_ref):
+    def __init__(self, data_obj: _Data, df_ref: pd.DataFrame, ticker_name: str):
         self.__data_obj = data_obj
-        # Store a reference to the original DataFrame, not a slice
-        self.__original_df = original_df_ref
+        self.__df_ref = df_ref # This is the specific ticker's DataFrame
+        self.__ticker_name = ticker_name
 
-    def _simplify_df_columns(self, df_slice):
-        """Drops the top level of columns if it's a DataFrame with MultiIndex and only one ticker exists."""
-        if isinstance(df_slice, pd.DataFrame) and \
-           isinstance(df_slice.columns, pd.MultiIndex) and \
-           len(self.__data_obj.tickers) == 1:
-            # Drop the ticker level (level 0)
-            try:
-                # Only drop if the resulting columns are unique, otherwise keep MultiIndex
-                simplified_cols = df_slice.columns.droplevel(0)
-                if simplified_cols.is_unique:
-                    return df_slice.droplevel(0, axis=1)
-                else:
-                    # If dropping level leads to duplicate columns (e.g., custom columns with same name as OHLCV),
-                    # keep the MultiIndex to avoid ambiguity.
-                    return df_slice
-            except ValueError: # Cannot drop level on empty DataFrame or Series
-                return df_slice
-        return df_slice
 
     def __getitem__(self, key):
-        # Return the appropriate slice from the full DataFrame
+        # Get item from the specific ticker's DataFrame, sliced to current length
         current_len = self.__data_obj._Data__len
-        full_index = self.__data_obj._Data__df.index # Use the index from the main _Data object
-        try:
-            # Attempt to access the column(s) from the full DataFrame and then slice
-            return self.__original_df.loc[full_index[:current_len], key]
-        except KeyError as e:
-            # Handle MultiIndex case for single key access when only one ticker exists
-            if isinstance(self.__original_df.columns, pd.MultiIndex) and \
-               isinstance(key, str) and \
-               len(self.__data_obj.tickers) == 1:
-                ticker = self.__data_obj.the_ticker
-                if (ticker, key) in self.__original_df.columns:
-                    # Access the specific column tuple and slice
-                    key_to_use = (ticker, key)
-                # else: key might be a new column name, handled below? Or let KeyError happen?
-                # Let's assume if it's a string and single ticker, we try the tuple format.
-
-            # Attempt to access the column(s) from the full DataFrame and then slice
-            result_slice = self.__original_df.loc[full_index[:current_len], key_to_use]
-            # This simplification should happen regardless of how the slice was obtained
-            return self._simplify_df_columns(result_slice) 
-
-        # This except block might be unreachable if the try block handles all cases or raises appropriately.
-        # Let's simplify the logic.
-
-    def __getitem__(self, key):
-        current_len = self.__data_obj._Data__len
-        # Use the index corresponding to the current view length
-        current_view_index = self.__data_obj.index 
-
-        try:
-            if isinstance(key, slice):
-                # Apply slice to the current view's index to get target labels
-                target_index = current_view_index[key]
-                result_slice = self.__original_df.loc[target_index, :]
-            elif isinstance(key, str):
-                 # Handle string key (potential column access)
-                 if isinstance(self.__original_df.columns, pd.MultiIndex) and \
-                    len(self.__data_obj.tickers) == 1:
-                     # Try accessing as (ticker, key) for single-asset MultiIndex
-                     ticker = self.__data_obj.the_ticker
-                     try:
-                         # Try accessing the specific tuple key first
-                         result_slice = self.__original_df.loc[current_view_index, (ticker, key)]
-                     except KeyError:
-                         # If (ticker, key) fails, try accessing the key directly.
-                         result_slice = self.__original_df.loc[current_view_index, key] # This might raise KeyError again
-                 else:
-                     # Standard single-level column access or multi-asset access (requires tuple key)
-                     result_slice = self.__original_df.loc[current_view_index, key]
-            else:
-                 # Handle other key types (e.g., list of columns, boolean array for rows)
-                 # Assume key applies to rows if it's not a column label type pandas recognizes for columns
-                 result_slice = self.__original_df.loc[current_view_index, key]
-
-            # Simplify columns if it's a single-asset context and result is a DataFrame
-            return self._simplify_df_columns(result_slice)
-
-        except KeyError as e:
-             # Reraise if the key truly doesn't exist after trying various access methods
-             raise KeyError(f"Key '{key}' not found in DataFrame index or columns") from e
-        # except Exception as e: # Catch other potential indexing errors? Be careful not to mask useful errors.
-        #     raise RuntimeError(f"Error during DataFrame access with key '{key}'") from e
-
+        return self.__df_ref.iloc[:current_len][key]
 
     def __setitem__(self, key, value):
-        # Modify the original DataFrame directly
-        full_index = self.__data_obj._Data__df.index # Use the index from the main _Data object
-
+        # Modify the specific ticker's DataFrame directly
         # Ensure value has the full length expected for the original DataFrame
-        if len(value) != len(self.__original_df):
-            if np.isscalar(value):
-                value = np.repeat(value, len(self.__original_df))
-            else:
-                # Attempt to align if value is a Series/array with matching index subset
-                try:
-                    # Use the current slice's index for alignment first
-                    aligned_value = pd.Series(value, index=self.__data_obj.index)
-                    # Then reindex to the full DataFrame's index
-                    aligned_value = aligned_value.reindex(full_index)
-                    value = aligned_value.values
-                except Exception as e:
-                    raise ValueError(f"Length mismatch or alignment error when setting column '{key}'. Expected {len(self.__original_df)}, got {len(value)}.") from e
-
-        if isinstance(self.__original_df.columns, pd.MultiIndex):
-            # Handle single string key for single-ticker case
-            if len(self.__data_obj.tickers) == 1 and isinstance(key, str):
-                ticker = self.__data_obj.the_ticker
-                # Use .loc with the full index for assignment
-                self.__original_df.loc[:, (ticker, key)] = value
-            elif isinstance(key, tuple) and len(key) == 2: # Assigning (ticker, column)
-                self.__original_df.loc[:, key] = value
-            else:
-                raise ValueError(f"Cannot assign key '{key}' to multi-asset DataFrame via .df accessor. Use tuple key (ticker, column) or ensure single asset.")
-        else: # Single-level DataFrame (should not occur with current Backtest init logic)
-             self.__original_df[key] = value
-
+        if isinstance(value, (np.ndarray, pd.Series, list)):
+            if len(value) == self.__data_obj._Data__len: # currently visible length
+                # Create a full-length series, assign to the visible part, then assign to df
+                full_value = pd.Series(np.nan, index=self.__df_ref.index)
+                full_value.iloc[:self.__data_obj._Data__len] = value
+                self.__df_ref[key] = full_value
+            elif len(value) == len(self.__df_ref.index): # full length
+                self.__df_ref[key] = value
+            else: # scalar or mismatched length
+                # Let pandas handle scalar assignment or raise error for mismatched length
+                self.__df_ref[key] = value
+        else: # scalar
+            self.__df_ref[key] = value
+        
         # Update the _Data object's arrays and cache
         self.__data_obj._update()
 
-    # Delegate other DataFrame methods/attributes
     def __getattr__(self, name):
-        # Handle direct attribute access for standard OHLCV columns in single-asset context
-        if name in ['Open', 'High', 'Low', 'Close', 'Volume'] and len(self.__data_obj.tickers) == 1:
-            ticker = self.__data_obj.the_ticker
-            key_to_use = (ticker, name)
-            if key_to_use in self.__original_df.columns:
-                # Return the column as a Series, sliced to the current length
-                current_len = self.__data_obj._Data__len
-                full_index = self.__data_obj._Data__df.index
-                # .loc access with tuple key on MultiIndex DF returns a Series
-                series_slice = self.__original_df.loc[full_index[:current_len], key_to_use]
-                return series_slice
-            # If (ticker, name) is not found for some reason, fall through to standard delegation
-
-        # Always delegate attribute access directly to the original DataFrame for other attributes.
-        # Slicing for indexers (like .iloc) happens upon use.
-        try:
-            original_attr = getattr(self.__original_df, name)
-            # Intercept indexers like iloc, loc to simplify their results
-            if name in ['iloc', 'loc']:
-                # Return a custom indexer wrapper that simplifies results
-                return _IndexerWrapper(self, original_attr)
-            else:
-                # Delegate other attributes directly
-                return original_attr
-        except AttributeError:
-            # Raise AttributeError consistent with normal object behavior
-            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'") from None
+        # Delegate to the specific ticker's DataFrame, sliced to current length
+        current_len = self.__data_obj._Data__len
+        # For attributes like 'iloc', 'loc', they should operate on the sliced view
+        # For methods, they should also operate on the sliced view if appropriate,
+        # or the full DataFrame if the method implies that (e.g. some forms of 'apply')
+        # This simplified version delegates to the full DataFrame and relies on user to slice.
+        # A more robust solution might return a sliced DataFrame for property-like access.
+        
+        # For indexers like iloc, loc, we want them to operate on the current view
+        if name in ['iloc', 'loc']:
+            return getattr(self.__df_ref.iloc[:current_len], name)
+        
+        # For other attributes/methods, delegate to the full DataFrame
+        # This might need refinement if methods need to be aware of the current slice.
+        return getattr(self.__df_ref, name)
 
     def __repr__(self):
-        # Represent the current slice of the full DataFrame
+        # Represent the current slice of the specific ticker's DataFrame
         current_len = self.__data_obj._Data__len
-        full_index = self.__data_obj._Data__df.index
-        # Use .loc with the full index for robust slicing
-        return repr(self.__original_df.loc[full_index[:current_len]])
+        return repr(self.__df_ref.iloc[:current_len])
+
+
+class _DataFrameDictAccessor:
+    """
+    Accessor for the dictionary of DataFrames in multi-asset mode.
+    Allows self.data.df[ticker] to get a specific DataFrame's accessor.
+    """
+    def __init__(self, data_obj: _Data, df_dict_ref: Dict[str, pd.DataFrame]):
+        self.__data_obj = data_obj
+        self.__df_dict_ref = df_dict_ref
+
+    def __getitem__(self, ticker_key: str) -> _DataFrameAccessor:
+        if ticker_key not in self.__df_dict_ref:
+            raise KeyError(f"Ticker '{ticker_key}' not found in DataFrame dictionary.")
+        return _DataFrameAccessor(self.__data_obj, self.__df_dict_ref[ticker_key], ticker_key)
+
+    def __repr__(self):
+        return f"<DataFrameDictAccessor for tickers: {list(self.__df_dict_ref.keys())}>"
+
+class _DataFrameView:
+    """
+    A view of a single ticker's DataFrame within _Data, supporting __getitem__ for columns.
+    Returned by `_Data.__getitem__(ticker_str)`.
+    """
+    def __init__(self, data_obj: _Data, ticker: str, df_ref: pd.DataFrame):
+        self._data_obj = data_obj
+        self._ticker = ticker
+        self._df_ref = df_ref # Full DataFrame for this ticker
+
+    def __getitem__(self, column_name: str) -> _Array:
+        # This should return an _Array, similar to _Data._get_array
+        return self._data_obj._get_array(self._ticker, column_name)
+
+    def __getattr__(self, name: str):
+        # Delegate attribute access to the underlying DataFrame for this ticker,
+        # considering the current length.
+        # This is for accessing DataFrame methods/properties like .columns, .index, .ta etc.
+        current_len = self._data_obj._Data__len
+        
+        # For .ta, we need to initialize _TA with the sliced DataFrame
+        if name == 'ta':
+            return _TA(self._df_ref.iloc[:current_len])
+
+        # For other attributes, delegate to the sliced DataFrame
+        return getattr(self._df_ref.iloc[:current_len], name)
+
+    @property
+    def s(self) -> Any: # Placeholder if we need a Series view from a column
+        """Accessor for Series-like operations on a column, not directly applicable here."""
+        raise NotImplementedError("Use data[ticker, column_name].s for Series accessor on a specific column.")
+
+    @property
+    def df(self) -> pd.DataFrame:
+        """Returns the currently visible slice of this ticker's DataFrame."""
+        current_len = self._data_obj._Data__len
+        return self._df_ref.iloc[:current_len]
+    
+    def __repr__(self):
+        current_len = self._data_obj._Data__len
+        return f"<DataFrameView for ticker '{self._ticker}':\n{self._df_ref.iloc[:current_len]}>"
 
 
 try:
@@ -618,22 +655,36 @@ class SharedMemoryManager:
         buf[:] = vals.tz_localize(None) if has_tz else vals  # Copy into shared memory
         return shm.name, vals.shape, vals.dtype
 
-    def df2shm(self, df):
+    def df2shm(self, df_dict: Dict[str, pd.DataFrame]):
         """
-        Converts a DataFrame to shared memory. Handles MultiIndex columns.
-        Returns a tuple containing:
-            - A tuple of tuples, where each inner tuple represents a column (or index)
-              and contains: (column_name, shm_name, shape, dtype).  column_name
-              will be a tuple for MultiIndex columns.
-            - A tuple containing the names of the columns.  For MultiIndex, this will
-              be a tuple of tuples.
+        Converts a dictionary of DataFrames to shared memory.
+        Returns a dictionary where keys are tickers, and values are tuples
+        (column_shm_info, index_shm_info, original_columns_list).
+        column_shm_info is a list of (col_name, shm_name, shape, dtype).
+        index_shm_info is (index_name_or_placeholder, shm_name, shape, dtype).
         """
-        column_names = tuple(df.columns)
-        data = tuple(
-            (column, *self.arr2shm(values))
-            for column, values in chain([(self._DF_INDEX_COL, df.index)], df.items())
-        )
-        return data, column_names
+        shm_data_dict = {}
+        if not df_dict:
+            return shm_data_dict
+        
+        # Assume all DataFrames share the same index for now
+        # Serialize the common index once
+        first_ticker = next(iter(df_dict))
+        common_index = df_dict[first_ticker].index
+        index_shm_info_tuple = (common_index.name or self._DF_INDEX_COL, *self.arr2shm(common_index.to_series()))
+
+
+        for ticker, df in df_dict.items():
+            if not df.index.equals(common_index):
+                raise ValueError("All DataFrames in df_dict must share the same index for current shm implementation.")
+
+            original_columns = list(df.columns) # Store original column order
+            column_data_shm = []
+            for col_name, series_data in df.items():
+                column_data_shm.append((col_name, *self.arr2shm(series_data)))
+            
+            shm_data_dict[ticker] = (column_data_shm, index_shm_info_tuple, original_columns)
+        return shm_data_dict
 
     @staticmethod
     def shm2s(shm, shape, dtype) -> pd.Series:
@@ -644,41 +695,63 @@ class SharedMemoryManager:
     _DF_INDEX_COL = '__bt_index'
 
     @staticmethod
-    def shm2df(data_shm, column_names):
+    def shm2df(shm_data_dict: Dict[str, Tuple[list, tuple, list]]):
         """
-        Reconstructs a DataFrame from shared memory, handling MultiIndex columns.
+        Reconstructs a dictionary of DataFrames from shared memory.
         Args:
-            data_shm: The tuple returned by df2shm.
-            column_names: The tuple of column names returned by df2shm.
+            shm_data_dict: The dictionary returned by df2shm.
         Returns:
-            A tuple containing the reconstructed DataFrame and a list of SharedMemory
-            objects that need to be unlinked.
+            A tuple containing the reconstructed Dict[str, pd.DataFrame] and a list
+            of all SharedMemory objects that need to be unlinked.
         """
-        shm_list = [SharedMemory(name=name, create=False, track=False) for _, name, _, _ in data_shm]
+        reconstructed_df_dict = {}
+        all_shm_list = []
+
+        common_index_reconstructed = None
+        index_shm_name_processed = None
+
+        for ticker, (column_shm_info, index_shm_info_tuple, original_columns) in shm_data_dict.items():
+            ticker_shms = []
+            
+            # Reconstruct index if not already done
+            if common_index_reconstructed is None:
+                index_name_or_placeholder, shm_name, shape, dtype = index_shm_info_tuple
+                index_shm = SharedMemory(name=shm_name, create=False, track=False)
+                ticker_shms.append(index_shm) # Add to this ticker's list for now
+                index_shm_name_processed = shm_name
+                common_index_reconstructed = SharedMemoryManager.shm2s(index_shm, shape, dtype)
+                if index_name_or_placeholder != SharedMemoryManager._DF_INDEX_COL:
+                    common_index_reconstructed.name = index_name_or_placeholder
+                else:
+                    common_index_reconstructed.name = None
+            elif index_shm_info_tuple[1] != index_shm_name_processed:
+                # This case should ideally not happen if index is shared and serialized once
+                # but if it does, we need to open the SHM for this specific index
+                _, shm_name, _, _ = index_shm_info_tuple
+                index_shm = SharedMemory(name=shm_name, create=False, track=False)
+                ticker_shms.append(index_shm)
+
+
+            data = {}
+            for col_name, shm_name, shape, dtype in column_shm_info:
+                col_shm = SharedMemory(name=shm_name, create=False, track=False)
+                ticker_shms.append(col_shm)
+                data[col_name] = SharedMemoryManager.shm2s(col_shm, shape, dtype)
+            
+            df = pd.DataFrame(data, index=common_index_reconstructed)
+            df = df[original_columns] # Restore original column order
+            reconstructed_df_dict[ticker] = df
+            all_shm_list.extend(ticker_shms)
         
-        # Reconstruct the DataFrame data.  Skip the index column.
-        data = {}
-        shms = iter(shm_list)
-        index_shm = next(shms) # first shm is the index
-        index_col, _, index_shape, index_dtype = data_shm[0]
+        # Deduplicate SHM objects in all_shm_list by name before returning
+        unique_shm_list = []
+        seen_shm_names = set()
+        for shm_obj in all_shm_list:
+            if shm_obj.name not in seen_shm_names:
+                unique_shm_list.append(shm_obj)
+                seen_shm_names.add(shm_obj.name)
 
-        for col in column_names:
-            shm = next(shms)
-            col_data = next(x for x in data_shm if x[0] == col)
-            _, _, shape, dtype = col_data
-            data[col] = SharedMemoryManager.shm2s(shm, shape, dtype)
-
-        df = pd.DataFrame(data)
-
-        #Reconstruct the index
-        df.index = SharedMemoryManager.shm2s(index_shm, index_shape, index_dtype)
-        df.index.name = None
-        
-        # Set the index name if it was set
-        if index_col != SharedMemoryManager._DF_INDEX_COL:
-            df.index.name = index_col
-
-        return df, shm_list
+        return reconstructed_df_dict, unique_shm_list
 
 
 
@@ -699,90 +772,134 @@ class _TA:
     def __setstate__(self, state):
         self.__dict__.update(state)
 
-    def __init__(self, obj: Union[pd.DataFrame, pd.Series]):
-        if obj.empty:
-            return
-        self._obj = obj
-        self._is_series = isinstance(obj, pd.Series)
-        self._is_dataframe = isinstance(obj, pd.DataFrame)
-        self.__tickers = []
-        self.__indicators = {}
-        self.__indicator = None # For single DataFrame or Series
+    def __init__(self, obj: Union[Dict[str, pd.DataFrame], pd.DataFrame, pd.Series]):
+        if isinstance(obj, dict): # Dict[str, pd.DataFrame] for multi-asset
+            if not obj: # Empty dict
+                self._obj = obj
+                self._is_series = False
+                self._is_dataframe = False # Or True, representing a collection of DataFrames
+                self.__tickers = []
+                self.__indicators = {}
+                self.__indicator = None
+                return
 
-        if self._is_dataframe:
-            if self._obj.columns.nlevels == 2:
-                self.__tickers = list(self._obj.columns.levels[0])
-                self.__indicators = {ticker: PicklableAnalysisIndicators(obj[ticker]) for ticker in self.__tickers}
-            elif self._obj.columns.nlevels == 1:
-                self.__indicator = PicklableAnalysisIndicators(obj)
-            else:
-                raise AttributeError(
-                    f'DataFrame columns can have at most 2 levels, got {self._obj.columns.nlevels}')
-        elif self._is_series:
-            # pandas_ta seems to expect a DataFrame even when initialized with a Series.
-            # Convert the Series to a DataFrame, ensuring a simple string column name
-            # to avoid AttributeError: Can only use .str accessor with Index, not MultiIndex
-            # which occurs if df.columns is a MultiIndex.
+            self._obj = obj
+            self._is_series = False
+            self._is_dataframe = True # Represents a multi-asset collection of DataFrames
+            self.__tickers = list(obj.keys())
+            self.__indicators = {ticker: PicklableAnalysisIndicators(df) for ticker, df in obj.items()}
+            self.__indicator = None
+        elif isinstance(obj, pd.DataFrame): # Single DataFrame
+            if obj.empty:
+                # Handle empty DataFrame case if necessary, or let pandas_ta handle it
+                self._obj = obj
+                self._is_series = False
+                self._is_dataframe = True
+                self.__tickers = []
+                self.__indicators = {}
+                self.__indicator = PicklableAnalysisIndicators(obj) if not obj.empty else None
+                return
+
+            self._obj = obj
+            self._is_series = False
+            self._is_dataframe = True
+            self.__tickers = [] # No tickers for single DataFrame context here
+            self.__indicators = {}
+            self.__indicator = PicklableAnalysisIndicators(obj)
+        elif isinstance(obj, pd.Series):
+            if obj.empty:
+                self._obj = obj
+                self._is_series = True
+                self._is_dataframe = False
+                self.__tickers = []
+                self.__indicators = {}
+                self.__indicator = None # pandas_ta might not work well with empty series for init
+                return
+
+            self._obj = obj
+            self._is_series = True
+            self._is_dataframe = False
+            self.__tickers = []
+            self.__indicators = {}
+            
             series_name = getattr(obj, 'name', None)
             if isinstance(series_name, tuple) and len(series_name) == 2:
-                # Use the second element of the tuple (e.g., 'Close' from ('GOOG', 'Close'))
                 col_name = series_name[1]
             elif isinstance(series_name, str):
                 col_name = series_name
             else:
-                # Default column name if the original name is complex or missing
-                col_name = 'Close' # pandas_ta often defaults to looking for 'close'
-
+                col_name = 'Close'
             df_from_series = obj.to_frame(name=col_name)
             self.__indicator = PicklableAnalysisIndicators(df_from_series)
         else:
-            raise TypeError("Input must be a pandas DataFrame or Series")
+            raise TypeError("Input must be a dictionary of DataFrames, a pandas DataFrame, or a pandas Series")
 
 
-    def __ta(self, method, *args, columns=None, **kwargs):
-        if self.__tickers: # Multi-asset DataFrame
-            dir_ = {ticker: getattr(indicator, method)(*args, **kwargs)
-                    for ticker, indicator in self.__indicators.items()}
-            if columns: # Rename columns if requested
-                for _, df in dir_.items():
-                    df.columns = columns
-            # Return concatenated DataFrame or single DataFrame if only one ticker
-            return pd.concat(dir_, axis=1) if len(dir_) > 1 else dir_[self.__tickers[0]]
-        elif self.__indicator: # Single-asset DataFrame or Series
-            return getattr(self.__indicator, method)(*args, **kwargs)
-        else: # Should not happen if __init__ worked
-             raise RuntimeError("TA object not properly initialized.")
+    def __ta(self, method_name, *args, columns=None, **kwargs):
+        if self.__indicators: # Multi-asset dictionary of DataFrames
+            results_dict = {
+                ticker: getattr(indicator, method_name)(*args, **kwargs)
+                for ticker, indicator in self.__indicators.items()
+            }
+            if columns: # Rename columns if requested (applies to each DataFrame in dict)
+                for ticker_df in results_dict.values():
+                    if isinstance(ticker_df, pd.DataFrame):
+                        ticker_df.columns = columns
+                    # If result is Series, renaming is trickier / less direct
+            return results_dict # Return dictionary of results
+        elif self.__indicator: # Single DataFrame or Series
+            return getattr(self.__indicator, method_name)(*args, **kwargs)
+        else: # Empty input object
+             if hasattr(self._obj, 'empty') and self._obj.empty:
+                 # Attempt to call on an empty df/series via pandas_ta, might return empty result or error
+                 # This path is tricky, pandas_ta behavior with empty inputs varies.
+                 # For now, let it try, or return an empty structure consistent with expected output.
+                 # This depends on what pandas_ta does.
+                 # A simple approach: if input was empty, result is likely empty.
+                 if isinstance(self._obj, dict): return {}
+                 if isinstance(self._obj, pd.DataFrame): return pd.DataFrame()
+                 if isinstance(self._obj, pd.Series): return pd.Series(dtype=float)
+
+
+             raise RuntimeError("TA object not properly initialized or input was empty in a way that prevents TA calculation.")
 
     def __getattr__(self, method: str):
-        # Allow calling pandas_ta methods directly, e.g., df.ta.sma()
-        if self.__indicator or self.__indicators:
+        if self.__indicator or self.__indicators or (hasattr(self._obj, 'empty') and self._obj.empty):
             return partial(self.__ta, method)
         else:
             raise AttributeError(f"'{type(self).__name__}' object has no attribute '{method}' or is uninitialized")
 
     def apply(self, func, *args, **kwargs):
         """Apply a custom function to the underlying data."""
-        if self.__tickers: # Multi-asset DataFrame
-            dir_ = {ticker: func(self._obj[ticker], *args, **kwargs) for ticker in self.__tickers}
-            return pd.concat(dir_, axis=1)
+        if self.__indicators: # Multi-asset dictionary of DataFrames
+            # self._obj is Dict[str, pd.DataFrame]
+            return {ticker: func(df, *args, **kwargs) for ticker, df in self._obj.items()}
         elif self._is_dataframe or self._is_series: # Single DataFrame or Series
             return func(self._obj, *args, **kwargs)
-        else:
-             raise RuntimeError("TA object not properly initialized.")
+        else: # Empty input
+             if hasattr(self._obj, 'empty') and self._obj.empty:
+                 if isinstance(self._obj, dict): return {}
+                 if isinstance(self._obj, pd.DataFrame): return pd.DataFrame() # Or func(self._obj)
+                 if isinstance(self._obj, pd.Series): return pd.Series(dtype=float) # Or func(self._obj)
+             raise RuntimeError("TA object not properly initialized or input was empty.")
 
     def join(self, other, lsuffix='', rsuffix=''):
         """Join with another DataFrame or Series."""
         if self._is_series:
-            # Series.join needs 'other' to be Series or list of Series
             return self._obj.join(other, lsuffix=lsuffix, rsuffix=rsuffix)
-        elif self.__tickers: # Multi-asset DataFrame
-            if not isinstance(other, pd.DataFrame) or other.columns.nlevels != 2 or \
-               set(self.__tickers) != set(other.columns.levels[0]):
-                raise ValueError("For multi-asset join, 'other' must be a DataFrame with matching tickers.")
-            dir_ = {ticker: self._obj[ticker].join(other[ticker], lsuffix=lsuffix, rsuffix=rsuffix)
-                    for ticker in self.__tickers}
-            return pd.concat(dir_, axis=1)
+        elif self.__indicators: # Multi-asset dictionary of DataFrames
+            if not isinstance(other, dict) or set(self.__tickers) != set(other.keys()):
+                raise ValueError("For multi-asset join, 'other' must be a dictionary of DataFrames with matching tickers.")
+            return {
+                ticker: self._obj[ticker].join(other[ticker], lsuffix=lsuffix, rsuffix=rsuffix)
+                for ticker in self.__tickers
+            }
         elif self._is_dataframe: # Single DataFrame
             return self._obj.join(other, lsuffix=lsuffix, rsuffix=rsuffix)
-        else:
-             raise RuntimeError("TA object not properly initialized.")
+        else: # Empty input
+             if hasattr(self._obj, 'empty') and self._obj.empty:
+                 # Behavior for join on empty df/series
+                 if isinstance(self._obj, pd.DataFrame): return self._obj.join(other, lsuffix=lsuffix, rsuffix=rsuffix)
+                 if isinstance(self._obj, pd.Series): return self._obj.join(other, lsuffix=lsuffix, rsuffix=rsuffix)
+                 if isinstance(self._obj, dict): return {} # Or raise error
+             raise RuntimeError("TA object not properly initialized or input was empty.")

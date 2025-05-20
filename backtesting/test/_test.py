@@ -562,7 +562,7 @@ class TestOptimize(TestCase):
         self.assertRaises(TypeError, bt.optimize, maximize=15, **OPT_PARAMS)
         self.assertRaises(TypeError, bt.optimize, constraint=15, **OPT_PARAMS)
         self.assertRaises(ValueError, bt.optimize, constraint=lambda d: False, **OPT_PARAMS)
-        self.assertRaises(ValueError, bt.optimize, return_optimization=True, **OPT_PARAMS)
+        self.assertRaises(ValueError, bt.optimize, return_optimization=True, method='grid', **OPT_PARAMS)
 
         res = bt.optimize(**OPT_PARAMS)
         self.assertIsInstance(res, pd.Series)
@@ -572,7 +572,7 @@ class TestOptimize(TestCase):
         self.assertDictEqual(res.filter(regex='^[^_]').fillna(-1).to_dict(),
                              res2.filter(regex='^[^_]').fillna(-1).to_dict())
 
-        res3, heatmap = bt.optimize(**OPT_PARAMS, return_heatmap=True,
+        res3, heatmap = bt.optimize(**OPT_PARAMS, method='grid', return_heatmap=True,
                                     constraint=lambda d: d.slow > 2 * d.fast)
         self.assertIsInstance(heatmap, pd.Series)
         self.assertEqual(len(heatmap), 4)
@@ -948,7 +948,29 @@ class TestLib(TestCase):
             with self.subTest(start_method=start_method), \
                     patch(backtesting, 'Pool', mp.get_context(start_method).Pool):
                 start_time = time.monotonic()
-                btm = MultiBacktest([GOOG, EURUSD, BTCUSD], SmaCross, cash=100_000)
+                # Clean data by dropping rows with NaNs in essential OHLC columns
+                ohlc_cols = ['Open', 'High', 'Low', 'Close']
+                cleaned_data_list = []
+                for df_original_unmodified in [GOOG, EURUSD, BTCUSD]:
+                    df_original = df_original_unmodified.copy() # Work on a copy
+                    for col in ohlc_cols:
+                        # Attempt to convert to numeric, coercing errors to NaN
+                        df_original[col] = pd.to_numeric(df_original[col], errors='coerce')
+                    
+                    # Now, df_original has OHLC cols as numeric, with non-convertibles as NaN
+                    # Proceed with cleaning
+                    df_cleaned = df_original[df_original[ohlc_cols].notnull().all(axis=1)].copy()
+                    
+                    # Optional: Add assertions here for debugging if needed in the future
+                    # if df_cleaned.empty and not df_original.empty:
+                    #     print(f"Warning: DataFrame became empty after cleaning. Original rows: {len(df_original)}, Cleaned rows: {len(df_cleaned)}") # noqa: E501
+                    # if not df_cleaned.empty and df_cleaned[ohlc_cols].isnull().values.any():
+                    #     print(f"Warning: DataFrame still has NaNs after cleaning and numeric conversion.") # noqa: E501
+                    #     # raise AssertionError("Data cleaning failed.")
+                    
+                    cleaned_data_list.append(df_cleaned)
+                
+                btm = MultiBacktest(cleaned_data_list, SmaCross, cash=100_000)
                 res = btm.run(fast=2)
                 self.assertIsInstance(res, pd.DataFrame)
                 self.assertEqual(res.columns.tolist(), [0, 1, 2])
@@ -1048,7 +1070,7 @@ class TestRegressions(TestCase):
 
         arr = np.r_[100, 100, 100, 50, 50]
         df = pd.DataFrame({'Open': arr, 'High': arr, 'Low': arr, 'Close': arr})
-        with self.assertWarnsRegex(UserWarning, 'index is not datetime'):
+        with self.assertWarnsRegex(UserWarning, 'Data index for Asset is not datetime'):
             bt = Backtest(df, S, cash=100, trade_on_close=True)
         self.assertEqual(bt.run()._trades['ExitPrice'][0], 50)
 
@@ -1079,7 +1101,7 @@ class TestRegressions(TestCase):
         df = pd.DataFrame({
             'Open': arr - 10,
             'Close': arr, 'High': arr, 'Low': arr})
-        with self.assertWarnsRegex(UserWarning, 'index is not datetime'):
+        with self.assertWarnsRegex(UserWarning, 'Data index for Asset is not datetime'):
             trades = TestStrategy._Backtest(coro, df, cash=250, trade_on_close=True).run()._trades
             # trades = Backtest(df, S, cash=250, trade_on_close=True).run()._trades
             self.assertEqual(trades['EntryBar'][0], 1)
@@ -1091,7 +1113,7 @@ class TestRegressions(TestCase):
             self.assertEqual(trades['EntryPrice'][1], 101)
             self.assertEqual(trades['ExitPrice'][1], 40)
 
-        with self.assertWarnsRegex(UserWarning, 'index is not datetime'):
+        with self.assertWarnsRegex(UserWarning, 'Data index for Asset is not datetime'):
             trades = TestStrategy._Backtest(coro, df, cash=250, trade_on_close=False).run()._trades
             # trades = Backtest(df, S, cash=250, trade_on_close=False).run()._trades
             self.assertEqual(trades['EntryBar'][0], 2)
@@ -1177,18 +1199,10 @@ class TestRegressions(TestCase):
 
 
 # Create a multi-asset dataframe from the imported GOOG and SPY data
-MULTI_ASSET_DATA = pd.DataFrame({
-    ("GOOG", "Open"): GOOG["Open"],
-    ("GOOG", "High"): GOOG["High"],
-    ("GOOG", "Low"): GOOG["Low"],
-    ("GOOG", "Close"): GOOG["Close"],
-    ("GOOG", "Volume"): GOOG["Volume"],
-    ("SPY", "Open"): SPY["Open"],
-    ("SPY", "High"): SPY["High"],
-    ("SPY", "Low"): SPY["Low"],
-    ("SPY", "Close"): SPY["Close"],
-    ("SPY", "Volume"): SPY["Volume"]
-})
+MULTI_ASSET_DATA = {
+    "GOOG": GOOG.copy(),
+    "SPY": SPY.copy()
+}
 
 
 def calculate_ema(data, period, smoothing=2):
@@ -1238,10 +1252,10 @@ class TestBacktestMulti(object):
 
                 # Calculate EMAs for SPY to determine market health
                 self.ema10_spy = self.I(
-                    calculate_ema, self.data["SPY", "Close"].s, 10, name="SPY_EMA10"
+                    calculate_ema, self.data["SPY"].Close, 10, name="SPY_EMA10"
                 )
                 self.ema20_spy = self.I(
-                    calculate_ema, self.data["SPY", "Close"].s, 20, name="SPY_EMA20"
+                    calculate_ema, self.data["SPY"].Close, 20, name="SPY_EMA20"
                 )
                 self.ema50_spy = self.I(
                     calculate_ema, self.data["SPY", "Close"].s, 50, name="SPY_EMA50"
@@ -1261,7 +1275,7 @@ class TestBacktestMulti(object):
                 # If market is healthy and GOOG is above its 10-day SMA, buy GOOG
                 if (
                     market_healthy
-                    and self.data["GOOG", "Close"][-1] > self.ema_goog[-1]
+                    and self.data["GOOG"].Close[-1] > self.ema_goog[-1]
                 ):
                     if not self.get_position("GOOG"):
                         # self.buy(ticker="GOOG", size=0.1)

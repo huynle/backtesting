@@ -221,7 +221,13 @@ def dummy_stats(_data=None):
         index = pd.DatetimeIndex(['2025'])
         _data = pd.DataFrame({('Asset1', 'Close'): [10], ('Asset2', 'Close'): [20]}, index=index)
         # _data = pd.DataFrame({col: [np.nan] for col in ('Close',)}, index=index)
-    data = _Data(_data.copy(deep=False))
+    
+    # _Data constructor expects Dict[str, pd.DataFrame].
+    # _data is a DataFrame with MultiIndex columns. Convert it.
+    _data_dict_for_constructor = {
+        ticker: _data[ticker].copy(deep=False) for ticker in _data.columns.levels[0]
+    }
+    data = _Data(_data_dict_for_constructor)
     _broker = _Broker(data=data, cash=10000, spread=.01, commission=.01, margin=.1,
                           trade_on_close=True, hedging=True, exclusive_orders=False,
                           holding={},trade_start_date=None,lot_size=1,fail_fast=True,storage=None)
