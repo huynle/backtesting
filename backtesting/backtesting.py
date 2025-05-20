@@ -601,11 +601,12 @@ class Strategy(ABC):
     `backtesting.backtesting.Strategy.next` to define
     your own strategy.
     """
-    def __init__(self, broker, data, params):
+    def __init__(self, broker, data, params, is_optimizing: bool = False):
         self._indicators = []
         self._broker: _Broker = broker
         self._data: _Data = data
         self._params = self._check_params(params)
+        self.is_optimizing = is_optimizing
         self._alloc = Allocation(data.tickers)
         self._data_index = data.index.copy()
         self._records = {}
@@ -2255,6 +2256,7 @@ class Backtest:
         self._strategy = strategy
         self._results: Optional[pd.Series] = None
         self._finalize_trades = bool(finalize_trades)
+        self._is_optimizing = False
 
         # equal weighed average, as if buy and hold an equal weighed portfolio
         weights = 1 / self._data.xs("Close", axis=1, level=1).iloc[0]
@@ -2320,7 +2322,7 @@ class Backtest:
         """
         data = _Data(self._data.copy(deep=False))
         broker: _Broker = self._broker(data=data)
-        strategy: Strategy = self._strategy(broker, data, kwargs)
+        strategy: Strategy = self._strategy(broker, data, kwargs, is_optimizing=self._is_optimizing)
         processed_orders: List[Order] = []
         final_positions = None
 
@@ -2515,157 +2517,165 @@ class Backtest:
         if return_optimization and method != 'sambo':
             raise ValueError("return_optimization=True only valid if method='sambo'")
 
-        def _tuple(x):
-            return x if isinstance(x, Sequence) and not isinstance(x, str) else (x,)
+        # Store original state and set flag for optimization run
+        original_is_optimizing_state = self._is_optimizing
+        self._is_optimizing = True
+        output = None
+        try:
+            def _tuple(x):
+                return x if isinstance(x, Sequence) and not isinstance(x, str) else (x,)
 
-        for k, v in kwargs.items():
-            if len(_tuple(v)) == 0:
-                raise ValueError(f"Optimization variable '{k}' is passed no "
-                                 f"optimization values: {k}={v}")
+            for k, v in kwargs.items():
+                if len(_tuple(v)) == 0:
+                    raise ValueError(f"Optimization variable '{k}' is passed no "
+                                     f"optimization values: {k}={v}")
 
-        class AttrDict(dict):
-            def __getattr__(self, item):
-                return self[item]
+            class AttrDict(dict):
+                def __getattr__(self, item):
+                    return self[item]
 
-        def _grid_size():
-            size = int(np.prod([len(_tuple(v)) for v in kwargs.values()]))
-            if size < 10_000 and have_constraint:
-                size = sum(1 for p in product(*(zip(repeat(k), _tuple(v))
-                                                for k, v in kwargs.items()))
-                           if constraint(AttrDict(p)))
-            return size
+            def _grid_size():
+                size = int(np.prod([len(_tuple(v)) for v in kwargs.values()]))
+                if size < 10_000 and have_constraint:
+                    size = sum(1 for p in product(*(zip(repeat(k), _tuple(v))
+                                                    for k, v in kwargs.items()))
+                               if constraint(AttrDict(p)))
+                return size
 
-        def _optimize_grid() -> Union[pd.Series, Tuple[pd.Series, pd.Series]]:
-            rand = default_rng(random_state).random
-            grid_frac = (1 if max_tries is None else
-                         max_tries if 0 < max_tries <= 1 else
-                         max_tries / _grid_size())
-            param_combos = [dict(params)  # back to dict so it pickles
-                            for params in (AttrDict(params)
-                                           for params in product(*(zip(repeat(k), _tuple(v))
-                                                                   for k, v in kwargs.items())))
-                            if constraint(params)
-                            and rand() <= grid_frac]
-            if not param_combos:
-                raise ValueError('No admissible parameter combinations to test')
+            def _optimize_grid() -> Union[pd.Series, Tuple[pd.Series, pd.Series]]:
+                rand = default_rng(random_state).random
+                grid_frac = (1 if max_tries is None else
+                             max_tries if 0 < max_tries <= 1 else
+                             max_tries / _grid_size())
+                param_combos = [dict(params)  # back to dict so it pickles
+                                for params in (AttrDict(params)
+                                               for params in product(*(zip(repeat(k), _tuple(v))
+                                                                       for k, v in kwargs.items())))
+                                if constraint(params)
+                                and rand() <= grid_frac]
+                if not param_combos:
+                    raise ValueError('No admissible parameter combinations to test')
 
-            if len(param_combos) > 300:
-                warnings.warn(f'Searching for best of {len(param_combos)} configurations.',
-                              stacklevel=2)
+                if len(param_combos) > 300:
+                    warnings.warn(f'Searching for best of {len(param_combos)} configurations.',
+                                  stacklevel=2)
 
-            heatmap = pd.Series(np.nan,
-                name=maximize_key,
-                index=pd.MultiIndex.from_tuples(
-                    [p.values() for p in param_combos],
-                                    names=next(iter(param_combos)).keys()))
+                heatmap = pd.Series(np.nan,
+                    name=maximize_key,
+                    index=pd.MultiIndex.from_tuples(
+                        [p.values() for p in param_combos],
+                                        names=next(iter(param_combos)).keys()))
 
-            from . import Pool
-            with Pool() as pool, \
-                    SharedMemoryManager() as smm:
-                with patch(self, '_data', None):
-                    bt = copy(self)  # bt._data will be reassigned in _mp_task worker
-                results = _tqdm(
-                    pool.imap(Backtest._mp_task,
-                              ((bt, smm.df2shm(self._data), params_batch)
-                               for params_batch in _batch(param_combos))),
-                    total=len(param_combos),
-                    desc='Backtest.optimize'
-                )
-                for param_batch, result in zip(_batch(param_combos), results):
-                    for params, stats in zip(param_batch, result):
-                        if stats is not None:
-                            heatmap[tuple(params.values())] = maximize(stats)
+                from . import Pool
+                with Pool() as pool, \
+                        SharedMemoryManager() as smm:
+                    with patch(self, '_data', None):
+                        bt = copy(self)  # bt._data will be reassigned in _mp_task worker
+                    results = _tqdm(
+                        pool.imap(Backtest._mp_task,
+                                  ((bt, smm.df2shm(self._data), params_batch)
+                                   for params_batch in _batch(param_combos))),
+                        total=len(param_combos),
+                        desc='Backtest.optimize'
+                    )
+                    for param_batch, result in zip(_batch(param_combos), results):
+                        for params, stats in zip(param_batch, result):
+                            if stats is not None:
+                                heatmap[tuple(params.values())] = maximize(stats)
 
-            if pd.isnull(heatmap).all():
-                # No trade was made in any of the runs. Just make a random
-                # run so we get some, if empty, results
-                stats = self.run(**param_combos[0])
-            else:
-                best_params = heatmap.idxmax(skipna=True)
-                stats = self.run(**dict(zip(heatmap.index.names, best_params)))
-
-            if return_heatmap:
-                return stats, heatmap
-            return stats
-
-        def _optimize_sambo() -> Union[pd.Series,
-                                       Tuple[pd.Series, pd.Series],
-                                       Tuple[pd.Series, pd.Series, dict]]:
-            try:
-                import sambo
-            except ImportError:
-                raise ImportError("Need package 'sambo' for method='sambo'. pip install sambo") from None
-
-            nonlocal max_tries
-            max_tries = (200 if max_tries is None else
-                         max(1, int(max_tries * _grid_size())) if 0 < max_tries <= 1 else
-                         max_tries)
-
-            dimensions = []
-            for key, values in kwargs.items():
-                values = np.asarray(values)
-                if values.dtype.kind in 'mM':  # timedelta, datetime64
-                    # these dtypes are unsupported in SAMBO, so convert to raw int
-                    # TODO: save dtype and convert back later
-                    values = values.astype(np.int64)
-
-                if values.dtype.kind in 'iumM':
-                    dimensions.append((values.min(), values.max() + 1))
-                elif values.dtype.kind == 'f':
-                    dimensions.append((values.min(), values.max()))
+                if pd.isnull(heatmap).all():
+                    # No trade was made in any of the runs. Just make a random
+                    # run so we get some, if empty, results
+                    stats = self.run(**param_combos[0])
                 else:
-                    dimensions.append(values.tolist())
+                    best_params = heatmap.idxmax(skipna=True)
+                    stats = self.run(**dict(zip(heatmap.index.names, best_params)))
 
-            # Avoid recomputing re-evaluations
-            @lru_cache()
-            def memoized_run(tup):
-                nonlocal maximize, self
-                stats = self.run(**dict(tup))
-                return -maximize(stats)
+                if return_heatmap:
+                    return stats, heatmap
+                return stats
 
-            progress = iter(_tqdm(repeat(None), total=max_tries, leave=False,
-                                  desc=self.optimize.__qualname__, mininterval=2))
-            _names = tuple(kwargs.keys())
+            def _optimize_sambo() -> Union[pd.Series,
+                                           Tuple[pd.Series, pd.Series],
+                                           Tuple[pd.Series, pd.Series, dict]]:
+                try:
+                    import sambo
+                except ImportError:
+                    raise ImportError("Need package 'sambo' for method='sambo'. pip install sambo") from None
 
-            def objective_function(x):
-                nonlocal progress, memoized_run, constraint, _names
-                next(progress)
-                value = memoized_run(tuple(zip(_names, x)))
-                return 0 if np.isnan(value) else value
+                nonlocal max_tries
+                max_tries = (200 if max_tries is None else
+                             max(1, int(max_tries * _grid_size())) if 0 < max_tries <= 1 else
+                             max_tries)
 
-            def cons(x):
-                nonlocal constraint, _names
-                return constraint(AttrDict(zip(_names, x)))
+                dimensions = []
+                for key, values in kwargs.items():
+                    values = np.asarray(values)
+                    if values.dtype.kind in 'mM':  # timedelta, datetime64
+                        # these dtypes are unsupported in SAMBO, so convert to raw int
+                        # TODO: save dtype and convert back later
+                        values = values.astype(np.int64)
 
-            res = sambo.minimize(
-                fun=objective_function,
-                bounds=dimensions,
-                constraints=cons,
-                max_iter=max_tries,
-                method='sceua',
-                rng=random_state)
+                    if values.dtype.kind in 'iumM':
+                        dimensions.append((values.min(), values.max() + 1))
+                    elif values.dtype.kind == 'f':
+                        dimensions.append((values.min(), values.max()))
+                    else:
+                        dimensions.append(values.tolist())
 
-            stats = self.run(**dict(zip(kwargs.keys(), res.x)))
-            output = [stats]
+                # Avoid recomputing re-evaluations
+                @lru_cache()
+                def memoized_run(tup):
+                    nonlocal maximize, self
+                    stats = self.run(**dict(tup))
+                    return -maximize(stats)
 
-            if return_heatmap:
-                heatmap = pd.Series(dict(zip(map(tuple, res.xv), -res.funv)),
-                                    name=maximize_key)
-                heatmap.index.names = kwargs.keys()
-                heatmap.sort_index(inplace=True)
-                output.append(heatmap)
+                progress = iter(_tqdm(repeat(None), total=max_tries, leave=False,
+                                      desc=self.optimize.__qualname__, mininterval=2))
+                _names = tuple(kwargs.keys())
 
-            if return_optimization:
-                output.append(res)
+                def objective_function(x):
+                    nonlocal progress, memoized_run, constraint, _names
+                    next(progress)
+                    value = memoized_run(tuple(zip(_names, x)))
+                    return 0 if np.isnan(value) else value
 
-            return stats if len(output) == 1 else tuple(output)
+                def cons(x):
+                    nonlocal constraint, _names
+                    return constraint(AttrDict(zip(_names, x)))
 
-        if method == 'grid':
-            output = _optimize_grid()
-        elif method in ('sambo', 'skopt'):
-            output = _optimize_sambo()
-        else:
-            raise ValueError(f"Method should be 'grid' or 'sambo', not {method!r}")
+                res = sambo.minimize(
+                    fun=objective_function,
+                    bounds=dimensions,
+                    constraints=cons,
+                    max_iter=max_tries,
+                    method='sceua',
+                    rng=random_state)
+
+                stats = self.run(**dict(zip(kwargs.keys(), res.x)))
+                output = [stats]
+
+                if return_heatmap:
+                    heatmap = pd.Series(dict(zip(map(tuple, res.xv), -res.funv)),
+                                        name=maximize_key)
+                    heatmap.index.names = kwargs.keys()
+                    heatmap.sort_index(inplace=True)
+                    output.append(heatmap)
+
+                if return_optimization:
+                    output.append(res)
+
+                return stats if len(output) == 1 else tuple(output)
+
+            if method == 'grid':
+                output = _optimize_grid()
+            elif method in ('sambo', 'skopt'):
+                output = _optimize_sambo()
+            else:
+                raise ValueError(f"Method should be 'grid' or 'sambo', not {method!r}")
+        finally:
+            # Reset the flag to its original state
+            self._is_optimizing = original_is_optimizing_state
         return output
 
     @staticmethod
