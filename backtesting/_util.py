@@ -219,7 +219,7 @@ class _Data:
                 ticker = self.the_ticker
                 if key not in self.__df_dict[ticker].columns:
                      raise KeyError(f"Column '{key}' not found for ticker '{ticker}'.")
-                return self._get_array(ticker, key)
+                return self._get_array(ticker, key).s # Return pd.Series via .s accessor
             else:
                 # Multi-asset mode, key is a column name - ambiguous
                 # Or key is a ticker name (already handled)
@@ -304,7 +304,16 @@ class _Data:
         if len(self._tickers) > 1:
             raise ValueError("Accessing `self.data.df` is ambiguous in a multi-asset context. Use `self.data[ticker].df`.")
 
-        return self.__df_dict[self.the_ticker]
+        original_df = self.__df_dict[self.the_ticker]
+        # In init(), self.__len is the full length of the data.
+        # If current view length (__len) is the same as the original DataFrame's length,
+        # return the original DataFrame. This allows modifications in init() (e.g., adding a new column)
+        # to be made on the actual underlying DataFrame, which will then be picked up by _update().
+        # Otherwise (e.g., in next()), return a slice.
+        if self.__len == len(original_df.index):
+            return original_df
+        else:
+            return original_df.iloc[:self.__len]
 
     @property
     def pip(self) -> float:

@@ -989,7 +989,7 @@ class TestUtil(TestCase):
             self.assertTrue(o.attr)
         self.assertFalse(o.attr)
 
-    def test_pandas_accessors_data_access(self):
+    def test_pandas_accessors(self):
         class S(Strategy):
             def init(self):
                 close, index = self.data.Close, self.data.index
@@ -1384,7 +1384,8 @@ class TestDataConditioning:
             def init(self):
                 assert isinstance(self.data[-5:], pd.DataFrame)
                 assert isinstance(self.data.df, pd.DataFrame)
-                assert isinstance(self.data['High'], pd.Series)
+                assert isinstance(self.data.df['High'], pd.Series)
+                assert isinstance(self.data.High, _Array)
 
             def next(self):
                 pass
