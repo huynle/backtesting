@@ -554,7 +554,6 @@ class TestStrategy(TestCase):
 class TestOptimize(TestCase):
     def test_optimize(self):
         bt = Backtest(GOOG.iloc[:100], SmaCross)
-        self.maxDiff = None
         OPT_PARAMS = {'fast': range(2, 5, 2), 'slow': [2, 5, 7, 9]}
 
         self.assertRaises(ValueError, bt.optimize)
@@ -563,7 +562,7 @@ class TestOptimize(TestCase):
         self.assertRaises(TypeError, bt.optimize, maximize=15, **OPT_PARAMS)
         self.assertRaises(TypeError, bt.optimize, constraint=15, **OPT_PARAMS)
         self.assertRaises(ValueError, bt.optimize, constraint=lambda d: False, **OPT_PARAMS)
-        self.assertRaises(ValueError, bt.optimize, return_optimization=True, method='grid', **OPT_PARAMS)
+        self.assertRaises(ValueError, bt.optimize, return_optimization=True, **OPT_PARAMS)
 
         res = bt.optimize(**OPT_PARAMS)
         self.assertIsInstance(res, pd.Series)
@@ -573,7 +572,7 @@ class TestOptimize(TestCase):
         self.assertDictEqual(res.filter(regex='^[^_]').fillna(-1).to_dict(),
                              res2.filter(regex='^[^_]').fillna(-1).to_dict())
 
-        res3, heatmap = bt.optimize(**OPT_PARAMS, method='grid', return_heatmap=True,
+        res3, heatmap = bt.optimize(**OPT_PARAMS, return_heatmap=True,
                                     constraint=lambda d: d.slow > 2 * d.fast)
         self.assertIsInstance(heatmap, pd.Series)
         self.assertEqual(len(heatmap), 4)
@@ -949,29 +948,7 @@ class TestLib(TestCase):
             with self.subTest(start_method=start_method), \
                     patch(backtesting, 'Pool', mp.get_context(start_method).Pool):
                 start_time = time.monotonic()
-                # Clean data by dropping rows with NaNs in essential OHLC columns
-                ohlc_cols = ['Open', 'High', 'Low', 'Close']
-                cleaned_data_list = []
-                for df_original_unmodified in [GOOG, EURUSD, BTCUSD]:
-                    df_original = df_original_unmodified.copy() # Work on a copy
-                    for col in ohlc_cols:
-                        # Attempt to convert to numeric, coercing errors to NaN
-                        df_original[col] = pd.to_numeric(df_original[col], errors='coerce')
-                    
-                    # Now, df_original has OHLC cols as numeric, with non-convertibles as NaN
-                    # Proceed with cleaning
-                    df_cleaned = df_original[df_original[ohlc_cols].notnull().all(axis=1)].copy()
-                    
-                    # Optional: Add assertions here for debugging if needed in the future
-                    # if df_cleaned.empty and not df_original.empty:
-                    #     print(f"Warning: DataFrame became empty after cleaning. Original rows: {len(df_original)}, Cleaned rows: {len(df_cleaned)}") # noqa: E501
-                    # if not df_cleaned.empty and df_cleaned[ohlc_cols].isnull().values.any():
-                    #     print(f"Warning: DataFrame still has NaNs after cleaning and numeric conversion.") # noqa: E501
-                    #     # raise AssertionError("Data cleaning failed.")
-                    
-                    cleaned_data_list.append(df_cleaned)
-                
-                btm = MultiBacktest(cleaned_data_list, SmaCross, cash=100_000)
+                btm = MultiBacktest([GOOG, EURUSD, BTCUSD], SmaCross, cash=100_000)
                 res = btm.run(fast=2)
                 self.assertIsInstance(res, pd.DataFrame)
                 self.assertEqual(res.columns.tolist(), [0, 1, 2])
