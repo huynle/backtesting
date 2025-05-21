@@ -18,7 +18,7 @@ from pandas.testing import assert_frame_equal
 
 from backtesting import Backtest, Strategy
 from backtesting._stats import compute_drawdown_duration_peaks
-from backtesting._util import _Array, _as_str, _Indicator, patch, try_
+from backtesting._util import _Array, _as_str, _Indicator, patch, try_, _DataFrameAccessor
 from backtesting.lib import (
     FractionalBacktest, MultiBacktest, OHLCV_AGG,
     SignalStrategy,
@@ -1356,17 +1356,38 @@ class TestDataConditioning:
     def test_multi_asset_data_access(self):
         class Simple(Strategy):
             def init(self):
-                assert self.data['GOOG'][-5:]
+                assert isinstance(self.data['GOOG'][-5:], pd.DataFrame)
+                assert isinstance(self.data['GOOG'], pd.DataFrame)
+                assert isinstance(self.data['GOOG', 'High'], _Array)
+                assert isinstance(self.data['GOOG']['High'], pd.Series)
+                assert isinstance(self.data['GOOG'].High, pd.Series)
+                with pytest.raises(ValueError):
+                    self.data.Open
+                
+                with pytest.raises(ValueError):
+                    self.data.High
+                
+                with pytest.raises(ValueError):
+                    self.data.Low
+                
+                with pytest.raises(ValueError):
+                    self.data.Close
+                
+                with pytest.raises(ValueError):
+                    self.data.Volume
 
             def next(self):
                 pass
+
         bt = Backtest(MULTI_ASSET_DATA, Simple)
         bt.run()
 
     def test_single_asset_data_access(self):
         class Simple(Strategy):
             def init(self):
-                assert self.data[-5:]
+                assert isinstance(self.data[-5:], pd.DataFrame)
+                assert isinstance(self.data.df, _DataFrameAccessor)
+                assert isinstance(self.data.High, _Array)
 
             def next(self):
                 pass
