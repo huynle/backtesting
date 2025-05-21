@@ -179,9 +179,10 @@ class _Data:
     and the returned "series" are _not_ `pd.Series` but `np.ndarray`
     for performance reasons.
     
-    This implementation supports both single-asset and multi-asset data through
-    a two-level column index structure, where the first level represents tickers
-    and the second level represents OHLCV columns.
+    This implementation supports both single-asset (input as a DataFrame which is
+    converted to a single-entry dictionary) and multi-asset data (input as a
+    dictionary of DataFrames, e.g., `{'TICKER1': df1, 'TICKER2': df2}`).
+    Each DataFrame in the dictionary should share the same index.
     """
     def __init__(self, data_dict: Dict[str, pd.DataFrame]):
         self.__df_dict = data_dict
@@ -257,13 +258,8 @@ class _Data:
 
 
     def __getattr__(self, item):
-        # Allows self.data.Close, self.data.Volume etc.
-        if item in ['Open', 'High', 'Low', 'Close', 'Volume']:
-            if len(self._tickers) == 1:
-                return self._get_array(self.the_ticker, item)
-            else:
-                raise AttributeError(f"Accessing `self.data.{item}` is ambiguous in a multi-asset context. Use `self.data[ticker, '{item}']`.")
         # Allows self.data.CustomColumn in single-asset mode
+        # Standard OHLCV access (e.g. self.data.Close) is handled by dedicated properties.
         if len(self._tickers) == 1:
             ticker = self.the_ticker
             if item in self.__df_dict[ticker].columns:
@@ -306,17 +302,21 @@ class _Data:
         return self.__len
 
     @property
-    def df(self) -> Union[pd.DataFrame, Dict[str, pd.DataFrame]]:
+    def df(self) -> Union[_DataFrameAccessor, Dict[str, _DataFrameAccessor]]:
         """
-        Returns the underlying DataFrame for a single ticker, or a dictionary of DataFrames
-        for multi-asset data.
+        Returns an accessor for the underlying DataFrame for a single ticker, 
+        or a dictionary of such accessors for multi-asset data.
         
-        This property also supports adding new columns to the DataFrame(s) which can then be accessed
-        as attributes of the _Data object (for single-asset) or via data[ticker, column_name].
+        This allows adding new columns to the DataFrame(s) (e.g., `data.df['NewCol'] = ...` 
+        or `data.df['TICKER']['NewCol'] = ...`) which then become accessible 
+        via the _Data object.
         """
         if len(self._tickers) == 1:
             return _DataFrameAccessor(self, self.__df_dict[self.the_ticker], self.the_ticker)
-        return _DataFrameDictAccessor(self, self.__df_dict)
+        return {
+            ticker: _DataFrameAccessor(self, self.__df_dict[ticker], ticker)
+            for ticker in self._tickers
+        }
 
 
     @property
@@ -325,18 +325,19 @@ class _Data:
             # Calculate pip based on the 'Close' prices of the first ticker
             # This might need adjustment if pips vary significantly across assets in a multi-asset scenario
             first_ticker = self._tickers[0]
-            # Ensure the key format matches how __arrays is populated: (ticker, column_name)
-            if (first_ticker, 'Close') in self.__arrays:
-                close_prices_series = self.__arrays[(first_ticker, 'Close')][1]
-            elif 'Close' in self.__df_dict.get(first_ticker, pd.DataFrame()).columns: # Fallback to __df_dict
-                close_prices_series = self.__df_dict[first_ticker]['Close']
+            
+            # self.__arrays stores (numpy_array_full_length, pandas_series_full_length)
+            # Access the pandas_series_full_length (index 1) for string operations
+            cache_key = (first_ticker, 'Close')
+            if cache_key in self.__arrays:
+                close_prices_series = self.__arrays[cache_key][1]
+                self.__pip = float(10**-np.median([len(s.partition('.')[-1])
+                                                   for s in close_prices_series.astype(str).values]))
             else:
-                # Fallback or raise error if 'Close' is not found for the first ticker
+                # 'Close' column not found for the first ticker, or __arrays not populated.
+                # Default pip. This case should ideally be rare if data is validated.
+                warnings.warn(f"Could not determine pip size from 'Close' column of ticker '{first_ticker}'. Defaulting to 0.01. Ensure 'Close' column exists.", UserWarning)
                 self.__pip = 0.01 # Default pip
-                return self.__pip
-
-            self.__pip = float(10**-np.median([len(s.partition('.')[-1])
-                                               for s in close_prices_series.astype(str).values]))
         return self.__pip
 
     def _get_array(self, ticker: str, column: str) -> _Array:
@@ -461,18 +462,6 @@ class _Data:
         # Return the DataFrame for the specified ticker
         return self.__df_dict[ticker]
 
-class _IndexerWrapper:
-    """Helper class to wrap pandas indexers (iloc, loc) and simplify columns of the result if needed."""
-    def __init__(self, accessor_obj, original_indexer):
-        self._accessor = accessor_obj
-        self._original_indexer = original_indexer
-
-    def __getitem__(self, key):
-        # Perform the original indexing operation
-        result_slice = self._original_indexer[key]
-        # Simplify columns if necessary before returning
-        return self._accessor._simplify_df_columns(result_slice)
-
 
 class _DataFrameAccessor:
     """
@@ -520,35 +509,15 @@ class _DataFrameAccessor:
         # A more robust solution might return a sliced DataFrame for property-like access.
         
         # For indexers like iloc, loc, we want them to operate on the current view
-        if name in ['iloc', 'loc']:
-            return getattr(self.__df_ref.iloc[:current_len], name)
-        
-        # For other attributes/methods, delegate to the full DataFrame
-        # This might need refinement if methods need to be aware of the current slice.
-        return getattr(self.__df_ref, name)
+        # For other attributes/methods, delegate to the sliced DataFrame view as well
+        # to ensure consistent read behavior. __setitem__ handles writes to the full df.
+        return getattr(self.__df_ref.iloc[:current_len], name)
 
     def __repr__(self):
         # Represent the current slice of the specific ticker's DataFrame
         current_len = self.__data_obj._Data__len
         return repr(self.__df_ref.iloc[:current_len])
 
-
-class _DataFrameDictAccessor:
-    """
-    Accessor for the dictionary of DataFrames in multi-asset mode.
-    Allows self.data.df[ticker] to get a specific DataFrame's accessor.
-    """
-    def __init__(self, data_obj: _Data, df_dict_ref: Dict[str, pd.DataFrame]):
-        self.__data_obj = data_obj
-        self.__df_dict_ref = df_dict_ref
-
-    def __getitem__(self, ticker_key: str) -> _DataFrameAccessor:
-        if ticker_key not in self.__df_dict_ref:
-            raise KeyError(f"Ticker '{ticker_key}' not found in DataFrame dictionary.")
-        return _DataFrameAccessor(self.__data_obj, self.__df_dict_ref[ticker_key], ticker_key)
-
-    def __repr__(self):
-        return f"<DataFrameDictAccessor for tickers: {list(self.__df_dict_ref.keys())}>"
 
 class _DataFrameView:
     """
