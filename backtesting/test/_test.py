@@ -1352,3 +1352,24 @@ class TestDataConditioning:
 
         bt = Backtest(data, Simple)
         assert bt
+
+    def test_multi_asset_data_access(self):
+        class Simple(Strategy):
+            def init(self):
+                assert self.data['GOOG'][-5:]
+
+            def next(self):
+                pass
+        bt = Backtest(MULTI_ASSET_DATA, Simple)
+        bt.run()
+
+    def test_single_asset_data_access(self):
+        class Simple(Strategy):
+            def init(self):
+                assert self.data[-5:]
+
+            def next(self):
+                pass
+        bt = Backtest(GOOG, Simple)
+        bt.run()
+

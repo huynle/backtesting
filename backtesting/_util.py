@@ -223,6 +223,15 @@ class _Data:
                 # Multi-asset mode, key is a column name - ambiguous
                 # Or key is a ticker name (already handled)
                 raise KeyError(f"Accessing column '{key}' directly is ambiguous in multi-asset mode. Use data[ticker, column_name] or data[ticker]['{key}'].")
+        elif isinstance(key, slice):
+            if len(self._tickers) == 1:
+                # Single-asset mode, apply slice to 'Close' data
+                # This matches the behavior expected by test_single_asset_data_access
+                close_array = self._get_array(self.the_ticker, 'Close')
+                return close_array[key]
+            else:
+                # Slicing directly on multi-asset _Data is ambiguous
+                raise TypeError(f"Slicing directly on multi-asset _Data is ambiguous. Slice a specific ticker's data instead, e.g., data['{self._tickers[0]}', 'Close'][-5:] or data['{self._tickers[0]}'][-5:].")
         raise TypeError(f"Invalid key type for _Data: {key}")
 
     def __setitem__(self, key, value):
@@ -450,7 +459,7 @@ class _Data:
             raise KeyError(f"Ticker '{ticker}' not found in data. Available tickers: {self._tickers}")
         
         # Return the DataFrame for the specified ticker
-        return self.__df[ticker]
+        return self.__df_dict[ticker]
 
 class _IndexerWrapper:
     """Helper class to wrap pandas indexers (iloc, loc) and simplify columns of the result if needed."""
@@ -551,9 +560,17 @@ class _DataFrameView:
         self._ticker = ticker
         self._df_ref = df_ref # Full DataFrame for this ticker
 
-    def __getitem__(self, column_name: str) -> _Array:
-        # This should return an _Array, similar to _Data._get_array
-        return self._data_obj._get_array(self._ticker, column_name)
+    def __getitem__(self, key: Union[str, slice]) -> _Array:
+        if isinstance(key, str):
+            # Accessing a specific column by name
+            return self._data_obj._get_array(self._ticker, key)
+        elif isinstance(key, slice):
+            # Slicing the default column ('Close') for this ticker
+            # This matches the behavior expected by test_multi_asset_data_access `self.data['GOOG'][-5:]`
+            close_array = self._data_obj._get_array(self._ticker, 'Close')
+            return close_array[key]
+        else:
+            raise TypeError(f"Invalid key type for _DataFrameView: {key}")
 
     def __getattr__(self, name: str):
         # Delegate attribute access to the underlying DataFrame for this ticker,
