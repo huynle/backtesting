@@ -158,65 +158,66 @@ class SmaCross(Strategy):
 # instance is initialized with OHLC data and a strategy _class_ (see API reference for additional options), and we begin with 10,000 units of cash and set broker's commission to realistic 0.2%.
 
 # +
-from backtesting import Backtest
-
-bt = Backtest(GOOG, SmaCross, cash=10_000, commission=.002)
-stats = bt.run()
-stats
-# -
-
-# [`Backtest.run()`](https://kernc.github.io/backtesting.py/doc/backtesting/backtesting.html#backtesting.backtesting.Backtest.run)
-# method returns a pandas Series of simulation results and statistics associated with our strategy. We see that this simple strategy makes almost 600% return in the period of 9 years, with maximum drawdown 33%, and with longest drawdown period spanning almost two years ...
-#
-# [`Backtest.plot()`](https://kernc.github.io/backtesting.py/doc/backtesting/backtesting.html#backtesting.backtesting.Backtest.plot)
-# method provides the same insights in a more visual form.
-
-bt.plot()
-
-# ## Optimization
-#
-# We hard-coded the two lag parameters (`n1` and `n2`) into our strategy above. However, the strategy may work better with 15–30 or some other cross-over. **We declared the parameters as optimizable by making them [class variables](https://docs.python.org/3/tutorial/classes.html#class-and-instance-variables)**.
-#
-# We optimize the two parameters by calling
-# [`Backtest.optimize()`](https://kernc.github.io/backtesting.py/doc/backtesting/backtesting.html#backtesting.backtesting.Backtest.optimize)
-# method with each parameter a keyword argument pointing to its pool of possible values to test. Parameter `n1` is tested for values in range between 5 and 30 and parameter `n2` for values between 10 and 70, respectively. Some combinations of values of the two parameters are invalid, i.e. `n1` should not be _larger than_ or equal to `n2`. We limit admissible parameter combinations with an _ad hoc_ constraint function, which takes in the parameters and returns `True` (i.e. admissible) whenever `n1` is less than `n2`. Additionally, we search for such parameter combination that maximizes return over the observed period. We could instead choose to optimize any other key from the returned `stats` series.
-
-# +
-# %%time
-
-stats = bt.optimize(n1=range(5, 30, 5),
-                    n2=range(10, 70, 5),
-                    maximize='Equity Final [$]',
-                    constraint=lambda param: param.n1 < param.n2)
-stats
-# -
-
-# We can look into `stats['_strategy']` to access the Strategy _instance_ and its optimal parameter values (10 and 15).
-
-stats._strategy
-
-bt.plot(plot_volume=False, plot_pl=False)
-
-# Strategy optimization managed to up its initial performance _on in-sample data_ by almost 50% and even beat simple
-# [buy & hold](https://en.wikipedia.org/wiki/Buy_and_hold).
-# In real life optimization, however, do **take steps to avoid
-# [overfitting](https://en.wikipedia.org/wiki/Overfitting)**.
-
-# ## Trade data
-#
-# In addition to backtest statistics returned by
-# [`Backtest.run()`](https://kernc.github.io/backtesting.py/doc/backtesting/backtesting.html#backtesting.backtesting.Backtest.run)
-# shown above, you can look into _individual trade returns_ and the changing _equity curve_ and _drawdown_ by inspecting the last few, internal keys in the result series.
-
-stats.tail()
-
-# The columns should be self-explanatory.
-
-stats['_equity_curve']  # Contains equity/drawdown curves. DrawdownDuration is only defined at ends of DD periods.
-
-stats['_trades']  # Contains individual trade data
-
-# Learn more by exploring further
-# [examples](https://kernc.github.io/backtesting.py/doc/backtesting/index.html#tutorials)
-# or find more framework options in the
-# [full API reference](https://kernc.github.io/backtesting.py/doc/backtesting/index.html#header-submodules).
+if __name__ == '__main__':
+    from backtesting import Backtest
+    
+    bt = Backtest(GOOG, SmaCross, cash=10_000, commission=.002)
+    stats = bt.run()
+    stats
+    # -
+    
+    # [`Backtest.run()`](https://kernc.github.io/backtesting.py/doc/backtesting/backtesting.html#backtesting.backtesting.Backtest.run)
+    # method returns a pandas Series of simulation results and statistics associated with our strategy. We see that this simple strategy makes almost 600% return in the period of 9 years, with maximum drawdown 33%, and with longest drawdown period spanning almost two years ...
+    #
+    # [`Backtest.plot()`](https://kernc.github.io/backtesting.py/doc/backtesting/backtesting.html#backtesting.backtesting.Backtest.plot)
+    # method provides the same insights in a more visual form.
+    
+    bt.plot()
+    
+    # ## Optimization
+    #
+    # We hard-coded the two lag parameters (`n1` and `n2`) into our strategy above. However, the strategy may work better with 15–30 or some other cross-over. **We declared the parameters as optimizable by making them [class variables](https://docs.python.org/3/tutorial/classes.html#class-and-instance-variables)**.
+    #
+    # We optimize the two parameters by calling
+    # [`Backtest.optimize()`](https://kernc.github.io/backtesting.py/doc/backtesting/backtesting.html#backtesting.backtesting.Backtest.optimize)
+    # method with each parameter a keyword argument pointing to its pool of possible values to test. Parameter `n1` is tested for values in range between 5 and 30 and parameter `n2` for values between 10 and 70, respectively. Some combinations of values of the two parameters are invalid, i.e. `n1` should not be _larger than_ or equal to `n2`. We limit admissible parameter combinations with an _ad hoc_ constraint function, which takes in the parameters and returns `True` (i.e. admissible) whenever `n1` is less than `n2`. Additionally, we search for such parameter combination that maximizes return over the observed period. We could instead choose to optimize any other key from the returned `stats` series.
+    
+    # +
+    # %%time
+    
+    stats = bt.optimize(n1=range(5, 30, 5),
+                        n2=range(10, 70, 5),
+                        maximize='Equity Final [$]',
+                        constraint=lambda param: param.n1 < param.n2)
+    stats
+    # -
+    
+    # We can look into `stats['_strategy']` to access the Strategy _instance_ and its optimal parameter values (10 and 15).
+    
+    stats._strategy
+    
+    bt.plot(plot_volume=False, plot_pl=False)
+    
+    # Strategy optimization managed to up its initial performance _on in-sample data_ by almost 50% and even beat simple
+    # [buy & hold](https://en.wikipedia.org/wiki/Buy_and_hold).
+    # In real life optimization, however, do **take steps to avoid
+    # [overfitting](https://en.wikipedia.org/wiki/Overfitting)**.
+    
+    # ## Trade data
+    #
+    # In addition to backtest statistics returned by
+    # [`Backtest.run()`](https://kernc.github.io/backtesting.py/doc/backtesting/backtesting.html#backtesting.backtesting.Backtest.run)
+    # shown above, you can look into _individual trade returns_ and the changing _equity curve_ and _drawdown_ by inspecting the last few, internal keys in the result series.
+    
+    stats.tail()
+    
+    # The columns should be self-explanatory.
+    
+    stats['_equity_curve']  # Contains equity/drawdown curves. DrawdownDuration is only defined at ends of DD periods.
+    
+    stats['_trades']  # Contains individual trade data
+    
+    # Learn more by exploring further
+    # [examples](https://kernc.github.io/backtesting.py/doc/backtesting/index.html#tutorials)
+    # or find more framework options in the
+    # [full API reference](https://kernc.github.io/backtesting.py/doc/backtesting/index.html#header-submodules).

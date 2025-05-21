@@ -85,21 +85,22 @@ class SmaCross(SignalStrategy,
 # Let's see how the example strategy fares on historical Google data.
 
 # +
-from backtesting import Backtest
-from backtesting.test import GOOG
-
-bt = Backtest(GOOG, SmaCross, commission=.002)
-
-bt.run()
-bt.plot()
-# -
-
-# Notice how managing risk with a trailing stop-loss secures our gains and limits our losses.
-#
-# For other strategies of the sort, and other reusable utilities in general, see
-# [**_backtesting.lib_ module reference**](https://kernc.github.io/backtesting.py/doc/backtesting/lib.html).
-
-# Learn more by exploring further
-# [examples](https://kernc.github.io/backtesting.py/doc/backtesting/index.html#tutorials)
-# or find more framework options in the
-# [full API reference](https://kernc.github.io/backtesting.py/doc/backtesting/index.html#header-submodules).
+if __name__ == '__main__':
+    from backtesting import Backtest
+    from backtesting.test import GOOG
+    
+    bt = Backtest(GOOG, SmaCross, commission=.002)
+    
+    bt.run()
+    bt.plot()
+    # -
+    
+    # Notice how managing risk with a trailing stop-loss secures our gains and limits our losses.
+    #
+    # For other strategies of the sort, and other reusable utilities in general, see
+    # [**_backtesting.lib_ module reference**](https://kernc.github.io/backtesting.py/doc/backtesting/lib.html).
+    
+    # Learn more by exploring further
+    # [examples](https://kernc.github.io/backtesting.py/doc/backtesting/index.html#tutorials)
+    # or find more framework options in the
+    # [full API reference](https://kernc.github.io/backtesting.py/doc/backtesting/index.html#header-submodules).

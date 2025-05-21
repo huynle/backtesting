@@ -116,24 +116,25 @@ class System(Strategy):
 
 # Let's see how our strategy fares replayed on nine years of Google stock data.
 
-# +
-from backtesting.test import GOOG
+if __name__ == '__main__':
+    # +
+    from backtesting.test import GOOG
 
-backtest = Backtest(GOOG, System, commission=.002)
-backtest.run()
-# -
+    backtest = Backtest(GOOG, System, commission=.002)
+    backtest.run()
+    # -
 
-# Meager four trades in the span of nine years and with zero return? How about if we optimize the parameters a bit?
+    # Meager four trades in the span of nine years and with zero return? How about if we optimize the parameters a bit?
 
-# +
-# %%time
+    # +
+    # %%time
 
-backtest.optimize(d_rsi=range(10, 35, 5),
-                  w_rsi=range(10, 35, 5),
-                  level=range(30, 80, 10))
-# -
+    backtest.optimize(d_rsi=range(10, 35, 5),
+                      w_rsi=range(10, 35, 5),
+                      level=range(30, 80, 10))
+    # -
 
-backtest.plot()
+    backtest.plot()
 
 # Better. While the strategy doesn't perform as well as simple buy & hold, it does so with significantly lower exposure (time in market).
 #

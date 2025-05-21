@@ -617,7 +617,6 @@ class SharedMemoryManager:
     A simple shared memory contextmanager based on
     https://docs.python.org/3/library/multiprocessing.shared_memory.html#multiprocessing.shared_memory.SharedMemory
     """
-
     def __init__(self, create=False) -> None:
         self._shms: list[SharedMemory] = []
         self.__create = create
@@ -655,36 +654,24 @@ class SharedMemoryManager:
         buf[:] = vals.tz_localize(None) if has_tz else vals  # Copy into shared memory
         return shm.name, vals.shape, vals.dtype
 
-    def df2shm(self, df_dict: Dict[str, pd.DataFrame]):
-        """
-        Converts a dictionary of DataFrames to shared memory.
-        Returns a dictionary where keys are tickers, and values are tuples
-        (column_shm_info, index_shm_info, original_columns_list).
-        column_shm_info is a list of (col_name, shm_name, shape, dtype).
-        index_shm_info is (index_name_or_placeholder, shm_name, shape, dtype).
-        """
-        shm_data_dict = {}
-        if not df_dict:
-            return shm_data_dict
-        
-        # Assume all DataFrames share the same index for now
-        # Serialize the common index once
-        first_ticker = next(iter(df_dict))
-        common_index = df_dict[first_ticker].index
-        index_shm_info_tuple = (common_index.name or self._DF_INDEX_COL, *self.arr2shm(common_index.to_series()))
-
-
-        for ticker, df in df_dict.items():
-            if not df.index.equals(common_index):
-                raise ValueError("All DataFrames in df_dict must share the same index for current shm implementation.")
-
-            original_columns = list(df.columns) # Store original column order
-            column_data_shm = []
-            for col_name, series_data in df.items():
-                column_data_shm.append((col_name, *self.arr2shm(series_data)))
-            
-            shm_data_dict[ticker] = (column_data_shm, index_shm_info_tuple, original_columns)
-        return shm_data_dict
+    def df2shm(self, data_input: Union[pd.DataFrame, Dict[str, pd.DataFrame]]):
+        if isinstance(data_input, pd.DataFrame):
+            # Handle single DataFrame
+            return tuple((
+                (column, *self.arr2shm(values))
+                for column, values in chain([(self._DF_INDEX_COL, data_input.index)], data_input.items())
+            ))
+        elif isinstance(data_input, dict):
+            # Handle Dict[str, pd.DataFrame]
+            return {
+                ticker: tuple((
+                    (column, *self.arr2shm(values))
+                    for column, values in chain([(self._DF_INDEX_COL, df.index)], df.items())
+                ))
+                for ticker, df in data_input.items()
+            }
+        else:
+            raise TypeError("df2shm expects a pandas.DataFrame or a Dict[str, pd.DataFrame]")
 
     @staticmethod
     def shm2s(shm, shape, dtype) -> pd.Series:
@@ -695,63 +682,31 @@ class SharedMemoryManager:
     _DF_INDEX_COL = '__bt_index'
 
     @staticmethod
-    def shm2df(shm_data_dict: Dict[str, Tuple[list, tuple, list]]):
-        """
-        Reconstructs a dictionary of DataFrames from shared memory.
-        Args:
-            shm_data_dict: The dictionary returned by df2shm.
-        Returns:
-            A tuple containing the reconstructed Dict[str, pd.DataFrame] and a list
-            of all SharedMemory objects that need to be unlinked.
-        """
-        reconstructed_df_dict = {}
-        all_shm_list = []
-
-        common_index_reconstructed = None
-        index_shm_name_processed = None
-
-        for ticker, (column_shm_info, index_shm_info_tuple, original_columns) in shm_data_dict.items():
-            ticker_shms = []
-            
-            # Reconstruct index if not already done
-            if common_index_reconstructed is None:
-                index_name_or_placeholder, shm_name, shape, dtype = index_shm_info_tuple
-                index_shm = SharedMemory(name=shm_name, create=False, track=False)
-                ticker_shms.append(index_shm) # Add to this ticker's list for now
-                index_shm_name_processed = shm_name
-                common_index_reconstructed = SharedMemoryManager.shm2s(index_shm, shape, dtype)
-                if index_name_or_placeholder != SharedMemoryManager._DF_INDEX_COL:
-                    common_index_reconstructed.name = index_name_or_placeholder
-                else:
-                    common_index_reconstructed.name = None
-            elif index_shm_info_tuple[1] != index_shm_name_processed:
-                # This case should ideally not happen if index is shared and serialized once
-                # but if it does, we need to open the SHM for this specific index
-                _, shm_name, _, _ = index_shm_info_tuple
-                index_shm = SharedMemory(name=shm_name, create=False, track=False)
-                ticker_shms.append(index_shm)
-
-
-            data = {}
-            for col_name, shm_name, shape, dtype in column_shm_info:
-                col_shm = SharedMemory(name=shm_name, create=False, track=False)
-                ticker_shms.append(col_shm)
-                data[col_name] = SharedMemoryManager.shm2s(col_shm, shape, dtype)
-            
-            df = pd.DataFrame(data, index=common_index_reconstructed)
-            df = df[original_columns] # Restore original column order
-            reconstructed_df_dict[ticker] = df
-            all_shm_list.extend(ticker_shms)
-        
-        # Deduplicate SHM objects in all_shm_list by name before returning
-        unique_shm_list = []
-        seen_shm_names = set()
-        for shm_obj in all_shm_list:
-            if shm_obj.name not in seen_shm_names:
-                unique_shm_list.append(shm_obj)
-                seen_shm_names.add(shm_obj.name)
-
-        return reconstructed_df_dict, unique_shm_list
+    def shm2df(data_shm_info: Union[tuple, Dict[str, tuple]]):
+        if isinstance(data_shm_info, tuple): # Info for a single DataFrame
+            shms = [SharedMemory(name=name, create=False, track=False) for _, name, _, _ in data_shm_info]
+            df = pd.DataFrame({
+                col: SharedMemoryManager.shm2s(shm, shape, dtype)
+                for shm, (col, _, shape, dtype) in zip(shms, data_shm_info)})
+            df.set_index(SharedMemoryManager._DF_INDEX_COL, drop=True, inplace=True)
+            df.index.name = None
+            return df, shms
+        elif isinstance(data_shm_info, dict): # Info for Dict[str, DataFrame]
+            reconstructed_dict = {}
+            all_shms = []
+            for ticker, single_df_shm_info in data_shm_info.items():
+                shms_for_df = [SharedMemory(name=name, create=False, track=False) for _, name, _, _ in single_df_shm_info]
+                df = pd.DataFrame({
+                    col: SharedMemoryManager.shm2s(shm, shape, dtype)
+                    for shm, (col, _, shape, dtype) in zip(shms_for_df, single_df_shm_info)})
+                df.set_index(SharedMemoryManager._DF_INDEX_COL, drop=True, inplace=True)
+                df.index.name = None
+                reconstructed_dict[ticker] = df
+                all_shms.extend(shms_for_df)
+            return reconstructed_dict, all_shms
+        else:
+            raise TypeError("shm2df expects shm info for a DataFrame (tuple) or Dict[str, DataFrame] (dict)")
+    
 
 
 

@@ -96,13 +96,14 @@ class Sma4Cross(Strategy):
 # +
 # %%time 
 
-from backtesting import Backtest
-from backtesting.test import GOOG
-
-
-backtest = Backtest(GOOG, Sma4Cross, commission=.002)
-
-stats, heatmap = backtest.optimize(
+if __name__ == '__main__':
+    from backtesting import Backtest
+    from backtesting.test import GOOG
+    
+    
+    backtest = Backtest(GOOG, Sma4Cross, commission=.002)
+    
+    stats, heatmap = backtest.optimize(
     n1=range(10, 110, 10),
     n2=range(20, 210, 20),
     n_enter=range(15, 35, 5),
@@ -112,82 +113,82 @@ stats, heatmap = backtest.optimize(
     max_tries=200,
     random_state=0,
     return_heatmap=True)
-# -
-
-# Notice `return_heatmap=True` parameter passed to
-# [`Backtest.optimize()`](https://kernc.github.io/backtesting.py/doc/backtesting/backtesting.html#backtesting.backtesting.Backtest.optimize).
-# It makes the function return a heatmap series along with the usual stats of the best run.
-# `heatmap` is a pandas Series indexed with a MultiIndex, a cartesian product of all permissible (tried) parameter values.
-# The series values are from the `maximize=` argument we provided.
-
-heatmap
-
-# This heatmap contains the results of all the runs,
-# making it very easy to obtain parameter combinations for e.g. three best runs:
-
-heatmap.sort_values().iloc[-3:]
-
-# But we use vision to make judgements on larger data sets much faster.
-# Let's plot the whole heatmap by projecting it on two chosen dimensions.
-# Say we're mostly interested in how parameters `n1` and `n2`, on average, affect the outcome.
-
-hm = heatmap.groupby(['n1', 'n2']).mean().unstack()
-hm = hm[::-1]
-hm
-
-# Let's plot this table as a heatmap:
-
-# +
-# %matplotlib inline
-
-import matplotlib.pyplot as plt
-
-fig, ax = plt.subplots()
-im = ax.imshow(hm, cmap='viridis')
-_ = (
+    # -
+    
+    # Notice `return_heatmap=True` parameter passed to
+    # [`Backtest.optimize()`](https://kernc.github.io/backtesting.py/doc/backtesting/backtesting.html#backtesting.backtesting.Backtest.optimize).
+    # It makes the function return a heatmap series along with the usual stats of the best run.
+    # `heatmap` is a pandas Series indexed with a MultiIndex, a cartesian product of all permissible (tried) parameter values.
+    # The series values are from the `maximize=` argument we provided.
+    
+    heatmap
+    
+    # This heatmap contains the results of all the runs,
+    # making it very easy to obtain parameter combinations for e.g. three best runs:
+    
+    heatmap.sort_values().iloc[-3:]
+    
+    # But we use vision to make judgements on larger data sets much faster.
+    # Let's plot the whole heatmap by projecting it on two chosen dimensions.
+    # Say we're mostly interested in how parameters `n1` and `n2`, on average, affect the outcome.
+    
+    hm = heatmap.groupby(['n1', 'n2']).mean().unstack()
+    hm = hm[::-1]
+    hm
+    
+    # Let's plot this table as a heatmap:
+    
+    # +
+    # %matplotlib inline
+    
+    import matplotlib.pyplot as plt
+    
+    fig, ax = plt.subplots()
+    im = ax.imshow(hm, cmap='viridis')
+    _ = (
     ax.set_xticks(range(len(hm.columns)), labels=hm.columns),
     ax.set_yticks(range(len(hm)), labels=hm.index),
     ax.set_xlabel('n2'),
     ax.set_ylabel('n1'),
     ax.figure.colorbar(im, ax=ax),
-)
-# -
-
-# We see that, on average, we obtain the highest result using trend-determining parameters `n1=30` and `n2=100` or `n1=70` and `n2=80`,
-# and it's not like other nearby combinations work similarly well — for our particular strategy, these combinations really stand out.
-#
-# Since our strategy contains several parameters, we might be interested in other relationships between their values.
-# We can use
-# [`backtesting.lib.plot_heatmaps()`](https://kernc.github.io/backtesting.py/doc/backtesting/lib.html#backtesting.lib.plot_heatmaps)
-# function to plot interactive heatmaps of all parameter combinations simultaneously.
-#
-# <a id=plot-heatmaps></a>
-
-# +
-from backtesting.lib import plot_heatmaps
-
-
-plot_heatmaps(heatmap, agg='mean')
-# -
-
-# ## Model-based optimization
-#
-# Above, we used _randomized grid search_ optimization method. Any kind of grid search, however, might be computationally expensive for large data sets. In the follwing example, we will use
-# [_SAMBO Optimization_](https://sambo-optimization.github.io)
-# package to guide our optimization better informed using forests of decision trees.
-# The hyperparameter model is sequentially improved by evaluating the expensive function (the backtest) at the next best point, thereby hopefully converging to a set of optimal parameters with **as few evaluations as possible**.
-#
-# So, with `method="sambo"`:
-
-# +
-# %%capture
-
-# ! pip install sambo  # This is a run-time dependency
-
-# +
-# #%%time
-
-stats, heatmap, optimize_result = backtest.optimize(
+    )
+    # -
+    
+    # We see that, on average, we obtain the highest result using trend-determining parameters `n1=30` and `n2=100` or `n1=70` and `n2=80`,
+    # and it's not like other nearby combinations work similarly well — for our particular strategy, these combinations really stand out.
+    #
+    # Since our strategy contains several parameters, we might be interested in other relationships between their values.
+    # We can use
+    # [`backtesting.lib.plot_heatmaps()`](https://kernc.github.io/backtesting.py/doc/backtesting/lib.html#backtesting.lib.plot_heatmaps)
+    # function to plot interactive heatmaps of all parameter combinations simultaneously.
+    #
+    # <a id=plot-heatmaps></a>
+    
+    # +
+    from backtesting.lib import plot_heatmaps
+    
+    
+    plot_heatmaps(heatmap, agg='mean')
+    # -
+    
+    # ## Model-based optimization
+    #
+    # Above, we used _randomized grid search_ optimization method. Any kind of grid search, however, might be computationally expensive for large data sets. In the follwing example, we will use
+    # [_SAMBO Optimization_](https://sambo-optimization.github.io)
+    # package to guide our optimization better informed using forests of decision trees.
+    # The hyperparameter model is sequentially improved by evaluating the expensive function (the backtest) at the next best point, thereby hopefully converging to a set of optimal parameters with **as few evaluations as possible**.
+    #
+    # So, with `method="sambo"`:
+    
+    # +
+    # %%capture
+    
+    # ! pip install sambo  # This is a run-time dependency
+    
+    # +
+    # #%%time
+    
+    stats, heatmap, optimize_result = backtest.optimize(
     n1=[10, 100],      # Note: For method="sambo", we
     n2=[20, 200],      # only need interval end-points
     n_enter=[10, 40],
@@ -199,34 +200,34 @@ stats, heatmap, optimize_result = backtest.optimize(
     random_state=0,
     return_heatmap=True,
     return_optimization=True)
-# -
-
-heatmap.sort_values().iloc[-3:]
-
-# Notice how the optimization runs somewhat slower even though `max_tries=` is lower. This is due to the sequential nature of the algorithm and should actually perform quite comparably even in cases of _much larger parameter spaces_ where grid search would effectively blow up, likely reaching a better optimum than a simple randomized search would.
-# A note of warning, again, to take steps to avoid
-# [overfitting](https://en.wikipedia.org/wiki/Overfitting)
-# insofar as possible.
-#
-# Understanding the impact of each parameter on the computed objective function is easy in two dimensions, but as the number of dimensions grows, partial dependency plots are increasingly useful.
-# [Plotting tools from _SAMBO_](https://sambo-optimization.github.io/doc/sambo/plot.html)
-# take care of the more mundane things needed to make good and informative plots of the parameter space.
-#
-# Note, because SAMBO internally only does _minimization_, the values in `optimize_result` are negated (less is better).
-
-# +
-from sambo.plot import plot_objective
-
-names = ['n1', 'n2', 'n_enter', 'n_exit']
-_ = plot_objective(optimize_result, names=names, estimator='et')
-
-# +
-from sambo.plot import plot_evaluations
-
-_ = plot_evaluations(optimize_result, names=names)
-# -
-
-# Learn more by exploring further
-# [examples](https://kernc.github.io/backtesting.py/doc/backtesting/index.html#tutorials)
-# or find more framework options in the
-# [full API reference](https://kernc.github.io/backtesting.py/doc/backtesting/index.html#header-submodules).
+    # -
+    
+    heatmap.sort_values().iloc[-3:]
+    
+    # Notice how the optimization runs somewhat slower even though `max_tries=` is lower. This is due to the sequential nature of the algorithm and should actually perform quite comparably even in cases of _much larger parameter spaces_ where grid search would effectively blow up, likely reaching a better optimum than a simple randomized search would.
+    # A note of warning, again, to take steps to avoid
+    # [overfitting](https://en.wikipedia.org/wiki/Overfitting)
+    # insofar as possible.
+    #
+    # Understanding the impact of each parameter on the computed objective function is easy in two dimensions, but as the number of dimensions grows, partial dependency plots are increasingly useful.
+    # [Plotting tools from _SAMBO_](https://sambo-optimization.github.io/doc/sambo/plot.html)
+    # take care of the more mundane things needed to make good and informative plots of the parameter space.
+    #
+    # Note, because SAMBO internally only does _minimization_, the values in `optimize_result` are negated (less is better).
+    
+    # +
+    from sambo.plot import plot_objective
+    
+    names = ['n1', 'n2', 'n_enter', 'n_exit']
+    _ = plot_objective(optimize_result, names=names, estimator='et')
+    
+    # +
+    from sambo.plot import plot_evaluations
+    
+    _ = plot_evaluations(optimize_result, names=names)
+    # -
+    
+    # Learn more by exploring further
+    # [examples](https://kernc.github.io/backtesting.py/doc/backtesting/index.html#tutorials)
+    # or find more framework options in the
+    # [full API reference](https://kernc.github.io/backtesting.py/doc/backtesting/index.html#header-submodules).
