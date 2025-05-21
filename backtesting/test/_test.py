@@ -18,7 +18,7 @@ from pandas.testing import assert_frame_equal
 
 from backtesting import Backtest, Strategy
 from backtesting._stats import compute_drawdown_duration_peaks
-from backtesting._util import _Array, _as_str, _Indicator, patch, try_, _DataFrameAccessor
+from backtesting._util import _Array, _as_str, _Indicator, patch, try_, _DataFrameView
 from backtesting.lib import (
     FractionalBacktest, MultiBacktest, OHLCV_AGG,
     SignalStrategy,
@@ -1386,7 +1386,7 @@ class TestDataConditioning:
         class Simple(Strategy):
             def init(self):
                 assert isinstance(self.data[-5:], pd.DataFrame)
-                assert isinstance(self.data.df, _DataFrameAccessor)
+                assert isinstance(self.data.df, _DataFrameView)
                 assert isinstance(self.data.High, _Array)
 
             def next(self):

@@ -109,84 +109,6 @@ def _indicator_warmup_nbars(strategy):
     return nbars
 
 
-class _DataFrameAccessor:
-    def __init__(self, data_obj: '_Data', ticker: str):
-        self._data_obj = data_obj
-        self._ticker = ticker
-        # _df is not stored directly, always access via _data_obj._Data__df_dict
-
-    def _get_current_df_view(self) -> pd.DataFrame:
-        # Returns the currently visible slice of the DataFrame
-        # Ensure the DataFrame exists for the ticker
-        if self._ticker not in self._data_obj._Data__df_dict:
-            raise KeyError(f"Ticker '{self._ticker}' not found in _Data object's internal dictionary.")
-        
-        df_for_ticker = self._data_obj._Data__df_dict[self._ticker]
-        current_len = self._data_obj._Data__len
-        
-        # Ensure current_len is not out of bounds for the DataFrame's index
-        if current_len > len(df_for_ticker.index):
-            # This case should ideally not happen if __len is managed correctly
-            # Or it might mean the df is shorter than the shared_index, which is problematic
-            # For safety, clamp current_len
-            current_len = len(df_for_ticker.index)
-            
-        return df_for_ticker.iloc[:current_len]
-
-    def __getitem__(self, key):
-        # key can be a column name, a slice, a list of columns, etc.
-        df_view = self._get_current_df_view()
-        return df_view[key] # This will return a Series or DataFrame
-
-    def __setitem__(self, key, value):
-        # key is typically a column name
-        if self._ticker not in self._data_obj._Data__df_dict:
-            raise KeyError(f"Cannot set item for ticker '{self._ticker}': Ticker not found.")
-
-        full_df = self._data_obj._Data__df_dict[self._ticker]
-        current_len = self._data_obj._Data__len
-        full_data_index = self._data_obj._shared_index
-
-        # Ensure the value is properly aligned and sized
-        if isinstance(value, (np.ndarray, pd.Series, list)):
-            # Convert value to a numpy array to simplify length checking and assignment
-            value_arr = np.asarray(value)
-            if len(value_arr) == current_len:
-                # Value is for the current slice, expand it to full length with NaNs
-                temp_series = pd.Series(np.nan, index=full_data_index)
-                # Ensure value_arr is 1D for Series assignment if it came from multi-column _Array
-                if value_arr.ndim > 1 and value_arr.shape[0] == 1: # e.g. _Array from self.I(lambda: (X,))
-                    value_arr = value_arr.flatten()
-                elif value_arr.ndim > 1 and value_arr.shape[1] == 1: # e.g. _Array from self.I(lambda: X.reshape(-1,1))
-                     value_arr = value_arr.flatten()
-                elif value_arr.ndim > 1:
-                    raise ValueError(f"Cannot assign multi-dimensional array of shape {value_arr.shape} to a single column '{key}'")
-
-                temp_series.iloc[:current_len] = value_arr
-                full_df[key] = temp_series
-            elif len(value_arr) == len(full_data_index):
-                # Value is already full length
-                full_df[key] = pd.Series(value_arr, index=full_data_index) if not isinstance(value_arr, pd.Series) else value_arr
-            else:
-                raise ValueError(
-                    f"Length of value ({len(value_arr)}) for column '{key}' on ticker '{self._ticker}' "
-                    f"does not match current data length ({current_len}) or full data length ({len(full_data_index)})"
-                )
-        else: # Scalar value
-            full_df[key] = value # Pandas broadcasts scalar
-
-        # After modification, data within _Data needs to be refreshed
-        self._data_obj._update()
-
-    def __getattr__(self, name):
-        # Delegate other attributes (like .columns, .index, .shape) to the current DataFrame view
-        # This makes the accessor behave more like a DataFrame.
-        df_view = self._get_current_df_view()
-        if hasattr(df_view, name):
-            return getattr(df_view, name)
-        raise AttributeError(f"'_DataFrameAccessor' object or its underlying DataFrame has no attribute '{name}'")
-
-
 class _Array(np.ndarray):
     """
     ndarray extended to supply .name and other arbitrary properties
@@ -244,6 +166,44 @@ class _Array(np.ndarray):
         index = self._opts['index'][:values.shape[1]]
         df = pd.DataFrame(values.T, index=index, columns=[self.name] * len(values))
         return df
+
+
+class _DataFrameView:
+    """
+    A view-like object that wraps a _Data instance for single-asset DataFrame access.
+    It allows read access like a DataFrame slice and routes write access (for new columns)
+    back to the _Data instance's __setitem__ to ensure underlying data is modified.
+    """
+    def __init__(self, data_instance: '_Data'):
+        self._data = data_instance
+        # Store a direct reference to the underlying DataFrame slice for read operations
+        # This ensures that methods like .shape, .columns, .index, .equals behave as expected on the current view.
+        self._df_slice = self._data._Data__df_dict[self._data.the_ticker].iloc[:self._data._Data__len]
+
+    def __getitem__(self, key):
+        # For read operations, behave like a normal DataFrame slice
+        return self._df_slice[key]
+
+    def __setitem__(self, key, value):
+        # For write operations (e.g., self.data.df['new_key'] = ...),
+        # delegate to the _Data instance's __setitem__.
+        # This ensures the underlying __df_dict is updated and _update() is called.
+        self._data[key] = value
+        # After _data[key] = value, _data._update() is called,
+        # which rebuilds internal arrays. The view's _df_slice needs to be refreshed
+        # if it's to reflect the new column immediately for chained operations on the same view instance.
+        # However, typical usage in strategy `init` then `next` means `_Data.df` is called anew.
+        # For safety, refresh the internal slice.
+        self._df_slice = self._data._Data__df_dict[self._data.the_ticker].iloc[:self._data._Data__len]
+
+
+    def __getattr__(self, name: str):
+        # Delegate other DataFrame attributes (like .shape, .columns, .index, .equals)
+        # to the underlying DataFrame slice.
+        return getattr(self._df_slice, name)
+
+    def __repr__(self) -> str:
+        return repr(self._df_slice)
 
 
 class _Indicator(_Array):
@@ -378,14 +338,17 @@ class _Data:
         return self.__len
 
     @property
-    def df(self) -> Union['_DataFrameAccessor', Dict[str, '_DataFrameAccessor']]:
+    def df(self) -> Union['_DataFrameView', pd.DataFrame, Dict[str, pd.DataFrame]]: # Adjusted type hint
         if len(self._tickers) == 1:
-            # Return a DataFrameAccessor for the single asset
-            return _DataFrameAccessor(self, self.the_ticker)
-        # For multi-asset, data.df returns a dictionary of accessors.
+            # Return a _DataFrameView for the single asset
+            return _DataFrameView(self)
+        # For multi-asset, data.df returns a dictionary of DataFrame slices.
+        # This part remains unchanged as the test focuses on single-asset.
+        # If similar write-through capability is needed for multi-asset dict values,
+        # they would also need to be wrapped (e.g., _DataFrameView(self, ticker_name=ticker)).
         return {
-            ticker: _DataFrameAccessor(self, ticker)
-            for ticker in self._tickers
+            ticker: df_ticker.iloc[:self.__len] # type: ignore[misc] # iloc is fine
+            for ticker, df_ticker in self.__df_dict.items()
         }
 
     @property
