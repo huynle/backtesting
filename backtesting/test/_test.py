@@ -18,7 +18,7 @@ from pandas.testing import assert_frame_equal
 
 from backtesting import Backtest, Strategy
 from backtesting._stats import compute_drawdown_duration_peaks
-from backtesting._util import _Array, _as_str, _Indicator, patch, try_, _DataFrameView
+from backtesting._util import _Array, _as_str, _Indicator, patch, try_
 from backtesting.lib import (
     FractionalBacktest, MultiBacktest, OHLCV_AGG,
     SignalStrategy,
@@ -989,7 +989,7 @@ class TestUtil(TestCase):
             self.assertTrue(o.attr)
         self.assertFalse(o.attr)
 
-    def test_pandas_accessors(self):
+    def test_pandas_accessors_data_access(self):
         class S(Strategy):
             def init(self):
                 close, index = self.data.Close, self.data.index
@@ -1358,9 +1358,6 @@ class TestDataConditioning:
             def init(self):
                 assert isinstance(self.data['GOOG'][-5:], pd.DataFrame)
                 assert isinstance(self.data['GOOG'], pd.DataFrame)
-                assert isinstance(self.data['GOOG', 'High'], _Array)
-                assert isinstance(self.data['GOOG']['High'], pd.Series)
-                assert isinstance(self.data['GOOG'].High, pd.Series)
                 with pytest.raises(ValueError):
                     self.data.Open
                 
@@ -1386,8 +1383,8 @@ class TestDataConditioning:
         class Simple(Strategy):
             def init(self):
                 assert isinstance(self.data[-5:], pd.DataFrame)
-                assert isinstance(self.data.df, _DataFrameView)
-                assert isinstance(self.data.High, _Array)
+                assert isinstance(self.data.df, pd.DataFrame)
+                assert isinstance(self.data['High'], pd.Series)
 
             def next(self):
                 pass

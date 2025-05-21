@@ -168,44 +168,6 @@ class _Array(np.ndarray):
         return df
 
 
-class _DataFrameView:
-    """
-    A view-like object that wraps a _Data instance for single-asset DataFrame access.
-    It allows read access like a DataFrame slice and routes write access (for new columns)
-    back to the _Data instance's __setitem__ to ensure underlying data is modified.
-    """
-    def __init__(self, data_instance: '_Data'):
-        self._data = data_instance
-        # Store a direct reference to the underlying DataFrame slice for read operations
-        # This ensures that methods like .shape, .columns, .index, .equals behave as expected on the current view.
-        self._df_slice = self._data._Data__df_dict[self._data.the_ticker].iloc[:self._data._Data__len]
-
-    def __getitem__(self, key):
-        # For read operations, behave like a normal DataFrame slice
-        return self._df_slice[key]
-
-    def __setitem__(self, key, value):
-        # For write operations (e.g., self.data.df['new_key'] = ...),
-        # delegate to the _Data instance's __setitem__.
-        # This ensures the underlying __df_dict is updated and _update() is called.
-        self._data[key] = value
-        # After _data[key] = value, _data._update() is called,
-        # which rebuilds internal arrays. The view's _df_slice needs to be refreshed
-        # if it's to reflect the new column immediately for chained operations on the same view instance.
-        # However, typical usage in strategy `init` then `next` means `_Data.df` is called anew.
-        # For safety, refresh the internal slice.
-        self._df_slice = self._data._Data__df_dict[self._data.the_ticker].iloc[:self._data._Data__len]
-
-
-    def __getattr__(self, name: str):
-        # Delegate other DataFrame attributes (like .shape, .columns, .index, .equals)
-        # to the underlying DataFrame slice.
-        return getattr(self._df_slice, name)
-
-    def __repr__(self) -> str:
-        return repr(self._df_slice)
-
-
 class _Indicator(_Array):
     pass
 
@@ -338,18 +300,11 @@ class _Data:
         return self.__len
 
     @property
-    def df(self) -> Union['_DataFrameView', pd.DataFrame, Dict[str, pd.DataFrame]]: # Adjusted type hint
-        if len(self._tickers) == 1:
-            # Return a _DataFrameView for the single asset
-            return _DataFrameView(self)
-        # For multi-asset, data.df returns a dictionary of DataFrame slices.
-        # This part remains unchanged as the test focuses on single-asset.
-        # If similar write-through capability is needed for multi-asset dict values,
-        # they would also need to be wrapped (e.g., _DataFrameView(self, ticker_name=ticker)).
-        return {
-            ticker: df_ticker.iloc[:self.__len] # type: ignore[misc] # iloc is fine
-            for ticker, df_ticker in self.__df_dict.items()
-        }
+    def df(self) -> pd.DataFrame:
+        if len(self._tickers) > 1:
+            raise ValueError("Accessing `self.data.df` is ambiguous in a multi-asset context. Use `self.data[ticker].df`.")
+
+        return self.__df_dict[self.the_ticker]
 
     @property
     def pip(self) -> float:
