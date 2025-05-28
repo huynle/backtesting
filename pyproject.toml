@@ -1,14 +1,12 @@
-[tool.poetry]
+[project]
 name = "backtesting"
 version = "0.1.0"
 description = "Backtest trading strategies in Python"
-authors = ["Karel Číž <karel.ciz@gmail.com>"]
-maintainers = ["Karel Číž <karel.ciz@gmail.com>"]
+authors = [{ name = "Karel Číž", email = "karel.ciz@gmail.com" }]
+maintainers = [{ name = "Karel Číž", email = "karel.ciz@gmail.com" }]
 license = "AGPL-3.0"
 readme = "README.md"
-homepage = "https://kernc.github.io/backtesting.py/"
-repository = "https://github.com/kernc/backtesting.py"
-documentation = "https://kernc.github.io/backtesting.py/doc/backtesting/"
+requires-python = ">=3.13"
 keywords = [
     "backtesting",
     "trading",
@@ -30,41 +28,60 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Mathematics",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
-packages = [{ include = "backtesting" }]
-include = ["backtesting/test/*.csv"]
+dependencies = [
+    "pandas>=1.3.0,<3.0.0",
+    "numpy>=2.0.0",
+    "ipython>=7.0.0",
+    "bokeh>=2.4.0",
+    "pandas-ta",
+    "scikit-optimize>=0,<1",
+    "tqdm>=4,<5",
+    "sambo>=1.25.1,<2",
+    "joblib>=1.4.2,<2",
+    "scikit-learn>=1.6.1,<2",
+    "matplotlib>=3.10.1,<4",
+    "setuptools>=60.0.0",
+]
 
-[tool.poetry.dependencies]
-python = ">=3.13"
-pandas = ">=1.3.0,<3.0.0"
-numpy = ">=2.0.0"
-ipython = ">=7.0.0"
-bokeh = ">=2.4.0"
-pandas-ta = {git = "https://github.com/huynle/pandas-ta.git", branch = "main"}
-scikit-optimize = ">=0,<1"
-tqdm = ">=4,<5"
-sambo = ">=1.25.1,<2"
-joblib = ">=1.4.2,<2"
-scikit-learn = ">=1.6.1,<2"
-matplotlib = ">=3.10.1,<4"
-setuptools = ">=60.0.0" # Add setuptools for pkg_resources
+[project.urls]
+Homepage = "https://kernc.github.io/backtesting.py/"
+Repository = "https://github.com/kernc/backtesting.py"
+Documentation = "https://kernc.github.io/backtesting.py/doc/backtesting/"
 
-[tool.poetry.group.dev.dependencies]
-autopep8 = ">=2,<3"
-pytest = ">=7,<8"
-notebook = ">=7,<8"
-vprof = ">=0.38,<0.39"
-pytest-cov = ">=4,<5"
-black = ">=24,<25"
-mkdocs = ">=1,<2"
-mkdocstrings = {version = ">=0.24,<0.25", extras = ["python"]}
-mkdocs-material = ">=9,<10"
-mkdocs-click = ">=0.8,<0.9"
-mkdocs-jupyter = ">=0.24,<0.25"
-lxml-html-clean = ">=0.1,<0.2"
+[project.optional-dependencies]
+dev = [
+    "autopep8>=2,<3",
+    "pytest>=7,<8",
+    "notebook>=7,<8",
+    "vprof>=0.38,<0.39",
+    "pytest-cov>=4,<5",
+    "black>=24,<25",
+    "mkdocs>=1,<2",
+    "mkdocstrings[python]>=0.24,<0.25",
+    "mkdocs-material>=9,<10",
+    "mkdocs-click>=0.8,<0.9",
+    "mkdocs-jupyter>=0.24,<0.25",
+    "lxml-html-clean>=0.1,<0.2",
+]
 
 [build-system]
-requires = ["poetry-core>=1.0.0"]
-build-backend = "poetry.core.masonry.api"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "backtesting",
+    "backtesting/test/*.csv",
+]
+
+[tool.hatch.build.targets.wheel]
+include = [
+    "backtesting",
+    "backtesting/test/*.csv",
+]
+
+[tool.uv.sources]
+pandas-ta = { git = "https://github.com/huynle/pandas-ta.git", branch = "main" }
 
 [tool.ruff]
 # Exclude line length checks

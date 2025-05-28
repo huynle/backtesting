@@ -541,20 +541,10 @@ class FractionalBacktest(Backtest):
         super().__init__(data, *args, **kwargs)
 
     def run(self, **kwargs) -> pd.Series:
-        # self._data_dict is Dict[str, pd.DataFrame]
-        # Create a new dict with scaled OHLC values.
-        scaled_data_dict = {}
-        for ticker, df in self._data_dict.items():
-            scaled_df = df.copy()
-            for col in ['Open', 'High', 'Low', 'Close']: # Scale only OHLC
-                if col in scaled_df:
-                    scaled_df[col] *= self._fractional_unit
-            # Scale Volume inversely
-            if 'Volume' in scaled_df:
-                scaled_df['Volume'] /= self._fractional_unit
-            scaled_data_dict[ticker] = scaled_df
-        
-        with patch(self, '_data_dict', scaled_data_dict):
+        data = self._data.copy()
+        data[['Open', 'High', 'Low', 'Close']] *= self._fractional_unit
+        data['Volume'] /= self._fractional_unit
+        with patch(self, '_data', data):
             result = super().run(**kwargs)
 
         trades: pd.DataFrame = result['_trades']
@@ -589,7 +579,11 @@ class MultiBacktest:
         heatmap_per_ticker: pd.DataFrame = btm.optimize(...)
     """
     def __init__(self, df_list, strategy_cls, **kwargs):
-        self._dfs = df_list
+        if isinstance(df_list, dict):
+            self._dfs = [v for _,v in df_list.items()]
+        else:
+            self._dfs = df_list
+
         self._strategy = strategy_cls
         self._bt_kwargs = kwargs
 
@@ -601,15 +595,12 @@ class MultiBacktest:
         from . import Pool
         with Pool() as pool, \
                 SharedMemoryManager() as smm:
-            # Each df in self._dfs is a single DataFrame for one Backtest instance.
-            # df2shm expects a Dict[str, pd.DataFrame]. Wrap df into {'Asset': df}.
-            shm = [smm.df2shm({'Asset': df}) for df in self._dfs]
+            shm = [smm.df2shm(df) for df in self._dfs]
             results = _tqdm(
                 pool.imap(self._mp_task_run,
-                          # Pass batches of shm_info to _mp_task_run
-                          ((shm_batch, self._strategy, self._bt_kwargs, kwargs)
-                           for shm_batch in _batch(shm))),
-                total=len(list(_batch(shm))), # Total is number of batches
+                          ((df_batch, self._strategy, self._bt_kwargs, kwargs)
+                           for df_batch in _batch(shm))),
+                total=len(shm),
                 desc=self.run.__qualname__,
                 mininterval=2
             )
@@ -618,44 +609,15 @@ class MultiBacktest:
 
     @staticmethod
     def _mp_task_run(args):
-        # args is (shm_info_batch, strategy_cls, bt_kwargs, run_kwargs)
-        shm_info_batch, strategy_cls, bt_kwargs, run_kwargs = args
-        
-        processed_stats_for_batch = []
-        for shm_info_for_single_df in shm_info_batch:
-            # shm_info_for_single_df is the dict {'Asset': (col_shm_info, idx_shm_info, orig_cols)}
-            # as returned by smm.df2shm({'Asset': df})
-            reconstructed_df_dict, shms_to_close = SharedMemoryManager.shm2df(shm_info_for_single_df)
-            # reconstructed_df_dict should be {'Asset': DataFrame}
-            # Backtest expects a single DataFrame or a Dict[str, DataFrame]
-            
-            # Clean the reconstructed DataFrame before passing to Backtest
-            # This is to ensure data integrity after shared memory transfer.
-            asset_df = reconstructed_df_dict['Asset']
-            ohlc_cols = ['Open', 'High', 'Low', 'Close'] # Define essential OHLC columns
-            
-            for col in ohlc_cols:
-                if col in asset_df.columns:
-                    asset_df[col] = pd.to_numeric(asset_df[col], errors='coerce')
-            
-            # Drop rows where any of the essential OHLC columns are NaN
-            asset_df_cleaned = asset_df[asset_df[ohlc_cols].notnull().all(axis=1)].copy()
-            
-            reconstructed_df_dict['Asset'] = asset_df_cleaned
-            
-            try:
-                # Check if the DataFrame for 'Asset' is empty before calling Backtest
-                if reconstructed_df_dict['Asset'].empty:
-                    processed_stats_for_batch.append(None)
-                else:
-                    # Pass the reconstructed dictionary directly
-                    stats = Backtest(reconstructed_df_dict, strategy_cls, **bt_kwargs).run(**run_kwargs)
-                    processed_stats_for_batch.append(stats.filter(regex='^[^_]') if stats['# Trades'] else None)
-            finally:
-                for shmem_obj in shms_to_close:
-                    shmem_obj.close()
-        return processed_stats_for_batch
-
+        data_shm, strategy, bt_kwargs, run_kwargs = args
+        dfs, shms = zip(*(SharedMemoryManager.shm2df(i) for i in data_shm))
+        try:
+            return [stats.filter(regex='^[^_]') if stats['# Trades'] else None
+                    for stats in (Backtest(df, strategy, **bt_kwargs).run(**run_kwargs)
+                                  for df in dfs)]
+        finally:
+            for shmem in chain(*shms):
+                shmem.close()
 
     def optimize(self, **kwargs) -> pd.DataFrame:
         """
