@@ -538,14 +538,20 @@ class FractionalBacktest(Backtest):
         self._fractional_unit = fractional_unit
         with warnings.catch_warnings(record=True):
             warnings.filterwarnings(action='ignore', message='frac')
-        super().__init__(data, *args, **kwargs)
+        
+        # Scale data before passing to superclass __init__
+        # This ensures Backtest initializes with scaled data, avoiding potential
+        # issues if it skips setting self._data due to e.g. price > cash warnings.
+        scaled_data = data.copy()
+        scaled_data[['Open', 'High', 'Low', 'Close']] *= self._fractional_unit
+        scaled_data['Volume'] /= self._fractional_unit
+        
+        super().__init__(scaled_data, *args, **kwargs)
 
     def run(self, **kwargs) -> pd.Series:
-        data = self._data.copy()
-        data[['Open', 'High', 'Low', 'Close']] *= self._fractional_unit
-        data['Volume'] /= self._fractional_unit
-        with patch(self, '_data', data):
-            result = super().run(**kwargs)
+        # self._data is already scaled (set by super().__init__ with scaled_data)
+        # No need to copy, scale, or patch self._data here.
+        result = super().run(**kwargs)
 
         trades: pd.DataFrame = result['_trades']
         trades['Size'] *= self._fractional_unit
