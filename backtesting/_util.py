@@ -302,9 +302,6 @@ class _Data:
 
     @property
     def df(self) -> pd.DataFrame:
-        if len(self._tickers) > 1:
-            raise ValueError("Accessing `self.data.df` is ambiguous in a multi-asset context. Use `self.data[ticker].df`.")
-
         original_df = self.__df_dict[self.the_ticker]
         # In init(), self.__len is the full length of the data.
         # If current view length (__len) is the same as the original DataFrame's length,
@@ -356,32 +353,22 @@ class _Data:
 
     @property
     def Open(self) -> _Array:
-        if len(self._tickers) > 1:
-            raise ValueError("Accessing `self.data.Open` is ambiguous in a multi-asset context. Use `self.data[ticker, 'Open']`.")
         return self._get_array(self.the_ticker, 'Open')
 
     @property
     def High(self) -> _Array:
-        if len(self._tickers) > 1:
-            raise ValueError("Accessing `self.data.High` is ambiguous in a multi-asset context. Use `self.data[ticker, 'High']`.")
         return self._get_array(self.the_ticker, 'High')
 
     @property
     def Low(self) -> _Array:
-        if len(self._tickers) > 1:
-            raise ValueError("Accessing `self.data.Low` is ambiguous in a multi-asset context. Use `self.data[ticker, 'Low']`.")
         return self._get_array(self.the_ticker, 'Low')
 
     @property
     def Close(self) -> _Array:
-        if len(self._tickers) > 1:
-            raise ValueError("Accessing `self.data.Close` is ambiguous in a multi-asset context. Use `self.data[ticker, 'Close']`.")
         return self._get_array(self.the_ticker, 'Close')
 
     @property
     def Volume(self) -> _Array:
-        if len(self._tickers) > 1:
-            raise ValueError("Accessing `self.data.Volume` is ambiguous in a multi-asset context. Use `self.data[ticker, 'Volume']`.")
         # Volume might be optional, handle if not present for the ticker
         if 'Volume' not in self.__df_dict[self.the_ticker].columns:
              # Return an array of NaNs or zeros if Volume is missing
@@ -411,17 +398,23 @@ class _Data:
         """Returns the list of tickers available in the data."""
         return self._tickers
 
+    def set_the_ticker(self, ticker):
+        if ticker not in self._tickers:
+            warnings.warn(f'Ticker {ticker} is not avaiable in the provided dataset.')
+        self._the_ticker = ticker
+
     @property
     def the_ticker(self) -> str:
         """
         Returns the single ticker when only one is available.
         Raises ValueError if multiple tickers exist, requiring explicit specification.
         """
-        if len(self._tickers) == 1:
-            return self._tickers[0]
-        elif self._the_ticker is not None:
+        if self._the_ticker is not None: # Check explicitly set ticker first
             return self._the_ticker
+        elif len(self._tickers) == 1:
+            return self._tickers[0]
         else:
+            # This case implies multiple tickers and _the_ticker was not set.
             raise ValueError('Ticker must explicitly specified for multi-asset backtesting')
 
     @property

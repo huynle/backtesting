@@ -6,7 +6,7 @@ import pytest
 import pandas as pd
 
 from backtesting import Backtest, Strategy, Allocation
-from backtesting._util import _Array
+from backtesting._util import _Array, _Data
 from backtesting.test import GOOG, SPY
 from pandas.testing import assert_series_equal
 
@@ -570,5 +570,141 @@ class TestBacktestMulti(object):
         bt = Backtest(MULTI_ASSET_DATA, MultiStrategy, cash=1_000_000)
         bt.run()
         # bt.plot()
+
+
+class BaseTickerStrategy(Strategy):
+    def init(self):
+        # This strategy is minimal, used to access the _Data object via Backtest
+        pass
+
+    def next(self):
+        pass
+
+
+class TestSetTheTicker:
+
+    def test_set_the_ticker_valid_access(self):
+        """
+        Tests that after setting a valid ticker in multi-asset data,
+        property-based access (e.g., self.data.Open) returns data for the set ticker.
+        """
+        data_obj_multi = _Data(MULTI_ASSET_DATA.copy())
+        strategy_multi = BaseTickerStrategy(broker=None, data=data_obj_multi, params={})
+
+        # Set ticker to GOOG
+        strategy_multi.data.set_the_ticker('GOOG')
+        assert strategy_multi.data.the_ticker == 'GOOG'
+        
+        # Access data via properties; these should now refer to GOOG
+        multi_goog_open = strategy_multi.data.Open
+        multi_goog_close = strategy_multi.data.Close
+        multi_goog_high = strategy_multi.data.High
+        multi_goog_low = strategy_multi.data.Low
+
+        # For comparison, get GOOG data directly using (ticker, column) access
+        direct_goog_open = strategy_multi.data['GOOG', 'Open']
+        direct_goog_close = strategy_multi.data['GOOG', 'Close']
+        direct_goog_high = strategy_multi.data['GOOG', 'High']
+        direct_goog_low = strategy_multi.data['GOOG', 'Low']
+
+        # Compare the series data
+        assert_series_equal(multi_goog_open.s, direct_goog_open.s, check_names=False)
+        assert_series_equal(multi_goog_close.s, direct_goog_close.s, check_names=False)
+        assert_series_equal(multi_goog_high.s, direct_goog_high.s, check_names=False)
+        assert_series_equal(multi_goog_low.s, direct_goog_low.s, check_names=False)
+
+        # Set ticker to SPY and repeat checks
+        strategy_multi.data.set_the_ticker('SPY')
+        assert strategy_multi.data.the_ticker == 'SPY'
+        multi_spy_open = strategy_multi.data.Open
+        multi_spy_close = strategy_multi.data.Close
+
+        direct_spy_open = strategy_multi.data['SPY', 'Open']
+        direct_spy_close = strategy_multi.data['SPY', 'Close']
+
+        assert_series_equal(multi_spy_open.s, direct_spy_open.s, check_names=False)
+        assert_series_equal(multi_spy_close.s, direct_spy_close.s, check_names=False)
+
+    def test_access_without_set_the_ticker_raises_error_multi_asset(self):
+        """
+        Tests that attempting to access data via properties without setting 
+        the_ticker in a multi-asset scenario raises a ValueError.
+        """
+        data_obj_multi = _Data(MULTI_ASSET_DATA.copy())
+        strategy_multi = BaseTickerStrategy(broker=None, data=data_obj_multi, params={})
+
+        # Accessing the_ticker property itself should fail
+        with pytest.raises(ValueError, match='Ticker must explicitly specified for multi-asset backtesting'):
+            _ = strategy_multi.data.the_ticker
+        
+        # Accessing data properties like .Open should fail
+        with pytest.raises(ValueError, match='Ticker must explicitly specified for multi-asset backtesting'):
+            _ = strategy_multi.data.Open
+
+        # Direct access using (ticker, column) should still work
+        goog_open = strategy_multi.data['GOOG', 'Open']
+        assert isinstance(goog_open, _Array)
+        # Ensure the data matches the original GOOG Open data (up to current length)
+        # The _Data instance is initialized with full length data.
+        expected_goog_open = MULTI_ASSET_DATA['GOOG']['Open'].iloc[:len(goog_open)]
+        assert_series_equal(goog_open.s, expected_goog_open, check_names=False)
+
+    def test_set_the_ticker_invalid_ticker_warns_and_access_error(self):
+        """
+        Tests that setting an invalid ticker issues a UserWarning, and subsequent
+        property-based data access for this invalid ticker raises a KeyError.
+        """
+        data_obj_multi = _Data(MULTI_ASSET_DATA.copy())
+        strategy_multi = BaseTickerStrategy(broker=None, data=data_obj_multi, params={})
+
+        with pytest.warns(UserWarning, match="Ticker NON_EXISTENT is not avaiable in the provided dataset."):
+            strategy_multi.data.set_the_ticker('NON_EXISTENT')
+        
+        assert strategy_multi.data.the_ticker == 'NON_EXISTENT'
+
+        # Accessing properties like .Open should now fail with KeyError
+        with pytest.raises(KeyError, match="Array for ticker 'NON_EXISTENT', column 'Open' not found"):
+            _ = strategy_multi.data.Open
+
+    def test_single_asset_behavior(self):
+        """
+        Tests behavior with single-asset data, ensuring properties work as expected
+        and set_the_ticker interacts predictably.
+        """
+        # Backtest internally keys a single DataFrame as "Asset"
+        expected_ticker_name_single_asset = 'Asset'
+
+        data_dict_single = {expected_ticker_name_single_asset: GOOG.copy()}
+        data_obj_single = _Data(data_dict_single)
+        strategy_single = BaseTickerStrategy(broker=None, data=data_obj_single, params={})
+
+
+        # the_ticker should be implicitly set to the DataFrame's derived name
+        assert strategy_single.data.the_ticker == expected_ticker_name_single_asset
+
+        # Access data via properties
+        single_open = strategy_single.data.Open
+        single_close = strategy_single.data.Close
+
+        # Compare with direct column access from original GOOG DataFrame
+        # Data length in strategy_single.data matches full GOOG length initially
+        expected_open = GOOG['Open'].iloc[:len(single_open)]
+        expected_close = GOOG['Close'].iloc[:len(single_close)]
+
+        assert_series_equal(single_open.s, expected_open, check_names=False)
+        assert_series_equal(single_close.s, expected_close, check_names=False)
+
+        # set_the_ticker should still work, even if redundant for single asset
+        strategy_single.data.set_the_ticker(expected_ticker_name_single_asset)
+        assert strategy_single.data.the_ticker == expected_ticker_name_single_asset
+        single_open_after_set = strategy_single.data.Open
+        assert_series_equal(single_open_after_set.s, expected_open, check_names=False)
+
+        # Setting to a non-existent ticker in single-asset mode
+        with pytest.warns(UserWarning, match="Ticker NON_EXISTENT is not avaiable in the provided dataset."):
+            strategy_single.data.set_the_ticker('NON_EXISTENT')
+        assert strategy_single.data.the_ticker == 'NON_EXISTENT'
+        with pytest.raises(KeyError, match="Array for ticker 'NON_EXISTENT', column 'Open' not found"):
+            _ = strategy_single.data.Open
     
 
