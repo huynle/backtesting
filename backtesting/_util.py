@@ -187,6 +187,7 @@ class _Data:
     def __init__(self, data_dict: Dict[str, pd.DataFrame]):
         self.__df_dict = data_dict
         self._tickers = list(data_dict.keys())
+        self._the_ticker = None
         if not self._tickers:
             raise ValueError("Data dictionary cannot be empty.")
         
@@ -418,6 +419,8 @@ class _Data:
         """
         if len(self._tickers) == 1:
             return self._tickers[0]
+        elif self._the_ticker is not None:
+            return self._the_ticker
         else:
             raise ValueError('Ticker must explicitly specified for multi-asset backtesting')
 
