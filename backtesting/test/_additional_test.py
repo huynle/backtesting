@@ -706,5 +706,143 @@ class TestSetTheTicker:
         assert strategy_single.data.the_ticker == 'NON_EXISTENT'
         with pytest.raises(KeyError, match="Array for ticker 'NON_EXISTENT', column 'Open' not found"):
             _ = strategy_single.data.Open
+
+
+class TestBacktestExtraData:
+    @pytest.fixture
+    def main_data_df(self):
+        return GOOG.copy()
+
+    @pytest.fixture
+    def extra_data_dict(self):
+        return {"SPY": SPY.copy()}
+
+    @pytest.fixture
+    def main_data_dict(self):
+        return {"GOOG": GOOG.copy(), "MSFT": GOOG.copy().rename(columns=lambda x: x.replace("GOOG", "MSFT"))} # Dummy MSFT data
+
+    class ExtraDataStrategy(Strategy):
+        def init(self):
+            # Test access to "Asset" (main data if it was a single DF)
+            if "Asset" in self.data.tickers:
+                self.main_close = self.data.Close # Should access "Asset"
+                self.main_asset_close_direct = self.data["Asset", "Close"]
+            
+            # Test access to "GOOG" (if main data was a dict)
+            if "GOOG" in self.data.tickers:
+                self.goog_close_direct = self.data["GOOG", "Close"]
+
+            # Test access to "SPY" (from extra_data)
+            if "SPY" in self.data.tickers:
+                self.extra_spy_close = self.data["SPY", "Close"]
+
+        def next(self):
+            if "Asset" in self.data.tickers:
+                assert self.main_close[-1] == self.main_asset_close_direct[-1]
+                # Simple check that data is available
+                assert not pd.isna(self.main_close[-1])
+            
+            if "GOOG" in self.data.tickers and hasattr(self, 'goog_close_direct'):
+                 assert not pd.isna(self.goog_close_direct[-1])
+
+            if "SPY" in self.data.tickers and hasattr(self, 'extra_spy_close'):
+                assert not pd.isna(self.extra_spy_close[-1])
+                # Example condition using extra data
+                if self.extra_spy_close[-1] > 100 and "Asset" in self.data.tickers:
+                    if not self.get_position("Asset"):
+                        self.buy(ticker="Asset", size=0.1) # Buy main asset based on extra data
+                elif "GOOG" in self.data.tickers and self.extra_spy_close[-1] > 100:
+                     if not self.get_position("GOOG"):
+                        self.buy(ticker="GOOG", size=0.1)
+
+
+    def test_extra_data_with_main_df(self, main_data_df, extra_data_dict):
+        """ Main data is DataFrame, extra_data is Dict. "Asset" should be default. """
+        bt = Backtest(main_data_df, self.ExtraDataStrategy, extra_data=extra_data_dict, cash=100_000, finalize_trades=True)
+        stats = bt.run()
+        
+        # Check _Data object internal state after init
+        assert "Asset" in bt._data_dict  # Main data becomes "Asset"
+        assert "SPY" in bt._data_dict   # Extra data is merged
+        assert bt._default_the_ticker == "Asset" # Default ticker set correctly
+
+        # Strategy should have run and made trades based on the logic
+        assert stats['# Trades'] > 0 
+
+    def test_extra_data_with_main_dict(self, main_data_dict, extra_data_dict):
+        """ Main data is Dict, extra_data is Dict. """
+        bt = Backtest(main_data_dict, self.ExtraDataStrategy, extra_data=extra_data_dict, cash=100_000, finalize_trades=True)
+        stats = bt.run()
+
+        assert "GOOG" in bt._data_dict
+        assert "MSFT" in bt._data_dict
+        assert "SPY" in bt._data_dict
+        assert bt._default_the_ticker is None # No default ticker if main data is dict
+
+        assert stats['# Trades'] > 0
+
+    def test_extra_data_ticker_conflict(self, main_data_df):
+        """ Extra_data has a ticker "Asset", main_data (df) also becomes "Asset". Main data should win. """
+        # Create extra data with "Asset" ticker, but different data (e.g., SPY data)
+        extra_data_conflict = {"Asset": SPY.copy()} 
+        
+        bt = Backtest(main_data_df, self.ExtraDataStrategy, extra_data=extra_data_conflict, cash=100_000, finalize_trades=True)
+        stats = bt.run()
+
+        assert "Asset" in bt._data_dict
+        assert bt._default_the_ticker == "Asset" # This is because main_data_df was single, and extra_data was present
+
+        # Verify that self.data.Close in strategy refers to GOOG data (main_data_df), not SPY
+        # This is implicitly tested by ExtraDataStrategy logic if it runs without error
+        # and if self.main_close matches self.main_asset_close_direct which uses "Asset" explicitly.
+        # A more direct check would be to inspect the _Data object within the strategy or log values.
+        # For now, rely on the strategy's internal assertions.
+        
+        # Check that the 'Asset' data is indeed from GOOG (main_data_df)
+        # Accessing internal _data_dict for verification
+        pd.testing.assert_frame_equal(bt._data_dict['Asset'], main_data_df)
+        # Since "SPY" data (which self.extra_spy_close depends on) is not loaded due to the "Asset" conflict,
+        # the strategy's conditions for buying "Asset" (which depend on extra_spy_close) are not met.
+        assert stats['# Trades'] == 0
+
+    def test_extra_data_ticker_conflict_main_dict(self, main_data_dict):
+        """ Extra_data has a ticker "GOOG", main_data (dict) also has "GOOG". Main data should win. """
+        extra_data_conflict = {"GOOG": SPY.copy()} # SPY data under "GOOG" ticker
+        
+        bt = Backtest(main_data_dict, self.ExtraDataStrategy, extra_data=extra_data_conflict, cash=100_000, finalize_trades=True)
+        stats = bt.run()
+
+        assert "GOOG" in bt._data_dict
+        assert "MSFT" in bt._data_dict
+        assert bt._default_the_ticker is None
+
+        # Verify that the "GOOG" data in bt._data_dict is from main_data_dict, not extra_data_conflict
+        pd.testing.assert_frame_equal(bt._data_dict['GOOG'], main_data_dict['GOOG'])
+        # SPY data is not loaded due to conflict. Strategy relies on self.extra_spy_close.
+        # Thus, an AttributeError will occur in strategy.next(), and no trades will be made.
+        assert stats['# Trades'] == 0
     
+    def test_no_extra_data_main_df(self, main_data_df):
+        """ Test with main data as DataFrame and no extra_data. """
+        bt = Backtest(main_data_df, self.ExtraDataStrategy, cash=100_000) # No extra_data
+        stats = bt.run()
+        
+        assert "Asset" in bt._data_dict
+        assert "SPY" not in bt._data_dict # SPY should not be present
+        assert bt._default_the_ticker is None # No extra_data, so no default_the_ticker logic triggered for "Asset" specifically
+        
+        # Strategy should run, but self.extra_spy_close won't be defined.
+        # The strategy's next() method checks for attribute existence.
+        assert stats['# Trades'] == 0 # No SPY data to trigger buy
+
+    def test_no_extra_data_main_dict(self, main_data_dict):
+        """ Test with main data as Dict and no extra_data. """
+        bt = Backtest(main_data_dict, self.ExtraDataStrategy, cash=100_000) # No extra_data
+        stats = bt.run()
+
+        assert "GOOG" in bt._data_dict
+        assert "MSFT" in bt._data_dict
+        assert "SPY" not in bt._data_dict
+        assert bt._default_the_ticker is None
+        assert stats['# Trades'] == 0 # No SPY data to trigger buy
 

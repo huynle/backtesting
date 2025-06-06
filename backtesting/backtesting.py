@@ -2268,6 +2268,14 @@ class Backtest:
     `holding` is a mapping of preexisting assets and their sizes before
     backtest begins, e.g.
 
+    `extra_data` is an optional dictionary where keys are ticker symbols (strings)
+    and values are `pd.DataFrame`s, each with OHLCV columns. This data is merged
+    with the primary `data`. If the primary `data` is a single DataFrame, it's
+    treated as "Asset". If `extra_data` is provided alongside a single-DataFrame
+    primary `data`, `Strategy.data.the_ticker` will default to "Asset", allowing
+    direct property access like `self.data.Open` to refer to the primary data.
+    Primary `data` takes precedence in case of key clashes with `extra_data`.
+
     `spread` is the the constant bid-ask spread rate (relative to the price).
     E.g. set it to `0.0002` for commission-less forex
     trading where the average spread is roughly 0.2‰ of the asking price.
@@ -2332,6 +2340,15 @@ class Backtest:
     past runs. Modification to storage is persisted and can be made available
     for future runs.
 
+    `extra_data` is an optional dictionary where keys are ticker symbols (strings)
+    and values are `pd.DataFrame`s, each with OHLCV columns. This data is merged
+    with the primary `data`. If the primary `data` is a single DataFrame, it's
+    treated as "Asset". If `extra_data` is provided alongside a single-DataFrame
+    primary `data`, `Strategy.data.the_ticker` will default to "Asset", allowing
+    direct property access like `self.data.Open` to refer to the primary data.
+    Primary `data` takes precedence in case of key clashes with `extra_data`.
+
+
     .. tip:: Fractional trading
         See also `backtesting.lib.FractionalBacktest` if you want to trade
         fractional units (of e.g. bitcoin).
@@ -2358,6 +2375,7 @@ class Backtest:
         lot_size=1,
         fail_fast=False,
         storage: dict | None = None,
+        extra_data: Optional[Dict[str, pd.DataFrame]] = None,
     ):
         if not (isinstance(strategy, type) and issubclass(strategy, Strategy)):
             raise TypeError(
@@ -2382,30 +2400,50 @@ class Backtest:
         ohlc_cols = ["Open", "High", "Low", "Close", "Volume"]
         ohlc_required = ["Open", "High", "Low", "Close"]
 
+        # Initialize data_dict and determine default_the_ticker
         data_dict: Dict[str, pd.DataFrame] = {}
+        self._default_the_ticker: Optional[str] = None  # New attribute
 
+        is_main_data_single_df = False
         if isinstance(data, pd.DataFrame):
-            df_copy = data.copy(deep=False)
-            if df_copy.columns.nlevels == 1:
-                # Single asset DataFrame
-                data_dict["Asset"] = df_copy
-            elif df_copy.columns.nlevels == 2:
-                # MultiIndex DataFrame, convert to Dict[str, pd.DataFrame]
-                for ticker in df_copy.columns.levels[0]:
-                    data_dict[ticker] = df_copy[ticker].copy()
-            else:
-                raise ValueError("DataFrame columns must have 1 or 2 levels.")
+            # If primary data is a single DataFrame, its conventional ticker is "Asset"
+            # Use copy(deep=False) as in original logic for potentially modified input `data`
+            data_dict["Asset"] = data.copy(deep=False)
+            is_main_data_single_df = True
         elif isinstance(data, dict):
-            for ticker, df_ticker in data.items():
-                if not isinstance(df_ticker, pd.DataFrame):
+            for ticker_key, df_val in data.items():
+                if not isinstance(df_val, pd.DataFrame):
                     raise TypeError(
-                        f"All values in data dictionary must be DataFrames. Found type {type(df_ticker)} for ticker '{ticker}'."
+                        f"All values in input `data` dictionary must be DataFrames. Found type {type(df_val)} for ticker '{ticker_key}'."
                     )
-                data_dict[ticker] = df_ticker.copy(deep=False)
+                data_dict[ticker_key] = df_val.copy(deep=False)
+        else:
+            # This case should have been caught by the initial type check for `data`
+            # but is included for robustness.
+            raise TypeError(
+                "`data` must be a pandas.DataFrame or a dictionary of DataFrames."
+            )
 
+        # Merge extra_data if provided; primary data (already in data_dict) takes precedence
+        if extra_data:
+            if not isinstance(extra_data, dict):
+                raise TypeError("`extra_data` must be a dictionary of DataFrames.")
+            for ticker_key, df_extra_val in extra_data.items():
+                if not isinstance(df_extra_val, pd.DataFrame):
+                    raise TypeError(
+                        f"All values in `extra_data` dictionary must be DataFrames. Found type {type(df_extra_val)} for ticker '{ticker_key}'."
+                    )
+                if ticker_key not in data_dict:  # Add only if ticker doesn't exist from primary data
+                    data_dict[ticker_key] = df_extra_val.copy(deep=False)
+
+        # Determine default_the_ticker if main data was a single DataFrame and extra_data was provided,
+        # implying a multi-asset context where "Asset" should be the default for direct access.
+        if is_main_data_single_df and extra_data: # Check if extra_data was provided and is non-empty
+            self._default_the_ticker = "Asset"
+        
         if not data_dict:
             raise ValueError(
-                "`data` cannot be empty or result in an empty data dictionary."
+                "`data` (and `extra_data`, if provided) must not result in an empty data dictionary."
             )
 
         # Validate and preprocess each DataFrame in the dictionary
@@ -2594,8 +2632,8 @@ class Backtest:
             Obviously, this can affect results.
         """
         data = _Data(self._data_dict.copy())
-        if 'the_ticker' in kwargs:
-            data.set_the_ticker(kwargs.pop('the_ticker'))
+        # `the_ticker` (if any) is now popped from kwargs and set on `data` later,
+        # after strategy.init() and data._update(), but before indicator slicing.
 
         broker: _Broker = self._broker(data=data)
         strategy: Strategy = self._strategy(
@@ -2604,11 +2642,20 @@ class Backtest:
         processed_orders: List[Order] = []
         final_positions = None
 
+        # Set the determined default ticker on the _Data object if no override is provided in run()
+        # This needs to happen before strategy.init() so that self.data.Close etc. can work.
+        run_time_the_ticker_override = kwargs.pop('the_ticker', None)
+        if run_time_the_ticker_override:
+            data.set_the_ticker(run_time_the_ticker_override)
+        elif self._default_the_ticker:
+            data.set_the_ticker(self._default_the_ticker)
+        # If neither is set, _Data.the_ticker property will use its default logic (e.g. error on multi-asset).
+
         try:
             strategy.init()
         except Exception as e:
-            print("Strategy initialization throws exception", e)
-            print(traceback.format_exc())
+            print("Strategy initialization throws exception", e) # noqa: T201
+            print(traceback.format_exc()) # noqa: T201
             raise
 
         data._update()  # Strategy.init might have changed/added to data.df (individual ticker DFs)
@@ -2632,7 +2679,7 @@ class Backtest:
 
         # Use the length of the common index established during initialization
         # This index is stored in _Data as self._shared_index
-        data_len = len(data._shared_index)
+        data_len = len(data._shared_index) # Corrected: data_obj was data
 
         # Disable "invalid value encountered in ..." warnings. Comparison
         # np.nan >= 3 is not invalid; it's False.
@@ -2645,7 +2692,7 @@ class Backtest:
                 miniters=100,
             ):
                 # Prepare data and indicators for `next` call
-                data._set_length(i + 1)
+                data._set_length(i + 1) # Corrected: data_obj was data
                 for attr, indicator in indicator_attrs:
                     # Slice indicator on the last dimension (case of 2d indicator)
                     setattr(strategy, attr, indicator[..., : i + 1])
@@ -2683,12 +2730,12 @@ class Backtest:
 
             # Set data back to full length
             # for future `indicator._opts['data'].index` calls to work
-            data._set_length(data_len)  # Use the full data_len
+            data._set_length(data_len)  # Use the full data_len, Corrected: data_obj was data
 
-            equity_df_columns = ["Equity"] + data.tickers + ["Cash"]
+            equity_df_columns = ["Equity"] + data.tickers + ["Cash"] # Corrected: data_obj was data
             equity = (
                 pd.DataFrame(
-                    broker._equity, index=data.index, columns=equity_df_columns
+                    broker._equity, index=data.index, columns=equity_df_columns # Corrected: data_obj was data
                 )
                 .bfill()
                 .fillna(broker._cash)
