@@ -2594,6 +2594,9 @@ class Backtest:
             Obviously, this can affect results.
         """
         data = _Data(self._data_dict.copy())
+        if 'the_ticker' in kwargs:
+            data.set_the_ticker(kwargs.pop('the_ticker'))
+
         broker: _Broker = self._broker(data=data)
         strategy: Strategy = self._strategy(
             broker, data, kwargs, is_optimizing=self._is_optimizing

@@ -18,7 +18,7 @@ from collections import OrderedDict
 from inspect import currentframe
 from itertools import chain, compress, count
 from numbers import Number
-from typing import Callable, Generator, Optional, Sequence, Union
+from typing import Callable, Dict, Generator, List, Optional, Sequence, Type, Union
 
 import numpy as np
 import pandas as pd
@@ -575,70 +575,97 @@ class MultiBacktest:
     """
     Multi-dataset `backtesting.backtesting.Backtest` wrapper.
 
-    Run supplied `backtesting.backtesting.Strategy` on several instruments,
-    in parallel.  Used for comparing strategy runs across many instruments
-    or classes of instruments. Example:
+    Run supplied `backtesting.backtesting.Strategy` on several data sets,
+    in parallel. Each data set can be a single `pd.DataFrame` (for single-asset
+    strategies) or a `Dict[str, pd.DataFrame]` (for multi-asset strategies).
+    Used for comparing strategy runs across many instruments or scenarios.
 
-        from backtesting.test import EURUSD, BTCUSD, SmaCross
-        btm = MultiBacktest([EURUSD, BTCUSD], SmaCross)
-        stats_per_ticker: pd.DataFrame = btm.run(fast=10, slow=20)
-        heatmap_per_ticker: pd.DataFrame = btm.optimize(...)
+    Example:
+        from backtesting.test import EURUSD, BTCUSD, GOOG, SPY, SmaCross
+        
+        # List of single-asset DataFrames
+        data_list_single = [EURUSD, BTCUSD]
+        btm_single = MultiBacktest(data_list_single, SmaCross)
+        stats_single: pd.DataFrame = btm_single.run(fast=10, slow=20)
+
+        # List of multi-asset data (dictionaries of DataFrames)
+        multi_data1 = {"GOOG": GOOG, "SPY": SPY}
+        multi_data2 = {"EURUSD": EURUSD, "BTCUSD": BTCUSD} # Another example
+        data_list_multi = [multi_data1, multi_data2]
+        # Assuming SmaCross can handle multi-asset or is adapted
+        btm_multi = MultiBacktest(data_list_multi, SmaCross) 
+        stats_multi: pd.DataFrame = btm_multi.run(fast=10, slow=20)
     """
-    def __init__(self, df_list, strategy_cls, **kwargs):
-        if isinstance(df_list, dict):
-            self._dfs = [v for _,v in df_list.items()]
-        else:
-            self._dfs = df_list
-
+    def __init__(self,
+                 data_items: Union[List[pd.DataFrame], List[Dict[str, pd.DataFrame]]],
+                 strategy_cls: Type[Strategy],
+                 **kwargs):
+        self._data_items = data_items
         self._strategy = strategy_cls
         self._bt_kwargs = kwargs
 
-    def run(self, **kwargs):
+    def run(self, **kwargs) -> pd.DataFrame:
         """
-        Wraps `backtesting.backtesting.Backtest.run`. Returns `pd.DataFrame` with
-        currency indexes in columns.
+        Wraps `backtesting.backtesting.Backtest.run`. Iterates through the list of
+        data items provided during initialization. Returns a `pd.DataFrame` where
+        columns correspond to the results from each data item.
         """
         from . import Pool
         with Pool() as pool, \
                 SharedMemoryManager() as smm:
-            shm = [smm.df2shm(df) for df in self._dfs]
+            # Each 'item' in self._data_items is either a DataFrame or a Dict[str, DataFrame]
+            # smm.df2shm handles both cases.
+            shm_info_list = [smm.df2shm(item) for item in self._data_items]
             results = _tqdm(
                 pool.imap(self._mp_task_run,
-                          ((df_batch, self._strategy, self._bt_kwargs, kwargs)
-                           for df_batch in _batch(shm))),
-                total=len(shm),
+                          ((item_shm_batch, self._strategy, self._bt_kwargs, kwargs)
+                           for item_shm_batch in _batch(shm_info_list))),
+                total=len(shm_info_list),
                 desc=self.run.__qualname__,
                 mininterval=2
             )
+            # The result columns will be simple integer indices (0, 1, 2, ...)
+            # corresponding to the order of data_items.
             df = pd.DataFrame(list(chain(*results))).transpose()
         return df
 
     @staticmethod
     def _mp_task_run(args):
-        data_shm, strategy, bt_kwargs, run_kwargs = args
-        dfs, shms = zip(*(SharedMemoryManager.shm2df(i) for i in data_shm))
+        item_shm_info_batch, strategy_cls, bt_kwargs, run_kwargs = args
+        # Each 'item_shm_info' corresponds to one data item (DataFrame or Dict[str, DataFrame])
+        reconstructed_data_items, all_shms_for_batch = zip(*(
+            SharedMemoryManager.shm2df(item_shm_info) for item_shm_info in item_shm_info_batch
+        ))
         try:
-            return [stats.filter(regex='^[^_]') if stats['# Trades'] else None
-                    for stats in (Backtest(df, strategy, **bt_kwargs).run(**run_kwargs)
-                                  for df in dfs)]
+            return [
+                stats.filter(regex='^[^_]') if stats['# Trades'] else None
+                for stats in (
+                    Backtest(data_item, strategy_cls, **bt_kwargs).run(**run_kwargs)
+                    for data_item in reconstructed_data_items
+                )
+            ]
         finally:
-            for shmem in chain(*shms):
-                shmem.close()
+            for shm_list_for_item in all_shms_for_batch:
+                for shmem in shm_list_for_item:
+                    shmem.close()
 
     def optimize(self, **kwargs) -> pd.DataFrame:
         """
-        Wraps `backtesting.backtesting.Backtest.optimize`, but returns `pd.DataFrame` with
-        currency indexes in columns.
+        Wraps `backtesting.backtesting.Backtest.optimize`. Iterates through the list
+        of data items. Returns a `pd.DataFrame` where columns correspond to the
+        optimization heatmaps from each data item.
 
-            heamap: pd.DataFrame = btm.optimize(...)
-            from backtesting.plot import plot_heatmaps
-            plot_heatmaps(heatmap.mean(axis=1))
+            heatmap_df: pd.DataFrame = btm.optimize(...)
+            # To get an average heatmap across all data items:
+            # average_heatmap = heatmap_df.mean(axis=1)
+            # from backtesting.lib import plot_heatmaps
+            # plot_heatmaps(average_heatmap)
         """
         heatmaps = []
         # Simple loop since bt.optimize already does its own multiprocessing
-        for df in _tqdm(self._dfs, desc=self.__class__.__name__, mininterval=2):
-            bt = Backtest(df, self._strategy, **self._bt_kwargs)
-            _best_stats, heatmap = bt.optimize(  # type: ignore
+        for data_item in _tqdm(self._data_items, desc=self.__class__.__name__, mininterval=2):
+            bt = Backtest(data_item, self._strategy, **self._bt_kwargs)
+            _best_stats, heatmap = bt.optimize( # type: ignore
                 return_heatmap=True, return_optimization=False, **kwargs)
             heatmaps.append(heatmap)
         heatmap = pd.DataFrame(dict(zip(count(), heatmaps)))
