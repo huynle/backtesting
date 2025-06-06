@@ -1093,10 +1093,6 @@ class Strategy(ABC):
         For multi-asset strategies, accessing this property raises a `ValueError`.
         Use `strategy.get_trades(ticker)` method instead.
         """
-        if len(self._data.tickers) > 1:
-            raise ValueError(
-                "For multi-asset strategies, use `strategy.get_trades(ticker)` method to access specific asset trades."
-            )
         # Return trades for the single ticker
         return tuple(self._broker.trades[self._data.the_ticker])
 
