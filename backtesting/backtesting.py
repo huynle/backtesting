@@ -2266,11 +2266,12 @@ class Backtest:
 
     `extra_data` is an optional dictionary where keys are ticker symbols (strings)
     and values are `pd.DataFrame`s, each with OHLCV columns. This data is merged
-    with the primary `data`. If the primary `data` is a single DataFrame, it's
-    treated as "Asset". If `extra_data` is provided alongside a single-DataFrame
-    primary `data`, `Strategy.data.the_ticker` will default to "Asset", allowing
-    direct property access like `self.data.Open` to refer to the primary data.
-    Primary `data` takes precedence in case of key clashes with `extra_data`.
+    with the primary `data`.
+    If the primary `data` is a single `pd.DataFrame` (it will be internally named "Asset")
+    or a single-entry dictionary (e.g. `{"MYTICKER": df}`), and `extra_data` is also provided,
+    `Strategy.data.the_ticker` will default to this primary asset's name (i.e., "Asset" or "MYTICKER").
+    This allows direct property access like `self.data.Open` to refer to this primary data.
+    Primary `data` (from the `data` parameter) takes precedence in case of key clashes with `extra_data`.
 
     `spread` is the the constant bid-ask spread rate (relative to the price).
     E.g. set it to `0.0002` for commission-less forex
@@ -2399,20 +2400,49 @@ class Backtest:
         # Initialize data_dict and determine default_the_ticker
         data_dict: Dict[str, pd.DataFrame] = {}
         self._default_the_ticker: Optional[str] = None  # New attribute
+        main_data_single_df_ticker_name: Optional[str] = None # Will store the name of the single main asset
 
         is_main_data_single_df = False
         if isinstance(data, pd.DataFrame):
-            # If primary data is a single DataFrame, its conventional ticker is "Asset"
-            # Use copy(deep=False) as in original logic for potentially modified input `data`
-            data_dict["Asset"] = data.copy(deep=False)
-            is_main_data_single_df = True
+            df_copy = data.copy(deep=False)  # Work with a copy
+            if df_copy.columns.nlevels == 1:
+                # Single asset DataFrame with simple columns
+                main_data_single_df_ticker_name = "Asset"
+                data_dict[main_data_single_df_ticker_name] = df_copy
+                is_main_data_single_df = True
+            elif df_copy.columns.nlevels == 2:
+                # MultiIndex DataFrame, treat as a dictionary of assets
+                for ticker_level in df_copy.columns.levels[0]:
+                    # Ensure each ticker's DataFrame has simple columns
+                    df_for_ticker = df_copy[ticker_level].copy()
+                    df_for_ticker.columns = [str(col) for col in df_for_ticker.columns] # Ensure simple string columns
+                    data_dict[str(ticker_level)] = df_for_ticker
+                is_main_data_single_df = False  # Main data is inherently multi-asset
+            else:
+                raise ValueError(
+                    "Input `data` DataFrame columns must have 1 or 2 levels. "
+                    f"Found {df_copy.columns.nlevels} levels."
+                )
         elif isinstance(data, dict):
-            for ticker_key, df_val in data.items():
+            if len(data) == 1:
+                # Single-entry dictionary, treat as a single main asset
+                main_data_single_df_ticker_name = next(iter(data.keys()))
+                df_val = next(iter(data.values()))
                 if not isinstance(df_val, pd.DataFrame):
                     raise TypeError(
-                        f"All values in input `data` dictionary must be DataFrames. Found type {type(df_val)} for ticker '{ticker_key}'."
+                        f"The value in the single-entry `data` dictionary for ticker '{main_data_single_df_ticker_name}' must be a DataFrame. Found type {type(df_val)}."
                     )
-                data_dict[ticker_key] = df_val.copy(deep=False)
+                data_dict[main_data_single_df_ticker_name] = df_val.copy(deep=False)
+                is_main_data_single_df = True
+            else:
+                # Multiple entries or empty dictionary (empty handled later)
+                is_main_data_single_df = False # Main data is multi-asset or empty
+                for ticker_key, df_val in data.items():
+                    if not isinstance(df_val, pd.DataFrame):
+                        raise TypeError(
+                            f"All values in input `data` dictionary must be DataFrames. Found type {type(df_val)} for ticker '{ticker_key}'."
+                        )
+                    data_dict[ticker_key] = df_val.copy(deep=False)
         else:
             # This case should have been caught by the initial type check for `data`
             # but is included for robustness.
@@ -2432,10 +2462,12 @@ class Backtest:
                 if ticker_key not in data_dict:  # Add only if ticker doesn't exist from primary data
                     data_dict[ticker_key] = df_extra_val.copy(deep=False)
 
-        # Determine default_the_ticker if main data was a single DataFrame and extra_data was provided,
-        # implying a multi-asset context where "Asset" should be the default for direct access.
-        if is_main_data_single_df and extra_data: # Check if extra_data was provided and is non-empty
-            self._default_the_ticker = "Asset"
+        # Determine default_the_ticker if main data was a single DataFrame (either from pd.DataFrame
+        # or a single-entry dict) and extra_data was provided.
+        # This implies a multi-asset context where the main single asset (identified by
+        # main_data_single_df_ticker_name) should be the default for direct access like self.data.Close.
+        if is_main_data_single_df and extra_data and main_data_single_df_ticker_name:
+            self._default_the_ticker = main_data_single_df_ticker_name
         
         if not data_dict:
             raise ValueError(
