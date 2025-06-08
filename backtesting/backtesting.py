@@ -1574,6 +1574,10 @@ class Trade:
     def pl_pct(self):
         """Trade profit (positive) or loss (negative) in percent."""
         price = self.__exit_price or self.__broker.get_last_price(self.__ticker)
+        # Handle division by zero
+        if self.__entry_price == 0:
+            return np.nan
+
         gross_pl_pct = copysign(1, self.__size) * (price / self.__entry_price - 1)
 
         # Total commission across the entire trade size to individual units
