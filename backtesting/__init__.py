@@ -78,9 +78,21 @@ from .backtesting import (  # noqa: F401
 
 
 # Add overridable backtesting.Pool used for parallel optimization
+# Users can override this by setting backtesting._pool_override = CustomPool
+# The _pool_override attribute is checked first to allow for cloudpickle or other
+# custom serialization pools that can handle closures and dynamic classes.
+_pool_override = None
+
+
 def Pool(processes=None, initializer=None, initargs=()):
     import platform
     import multiprocessing as mp
+
+    # Check for custom pool override (e.g., CloudPicklePool)
+    # This allows users to set backtesting._pool_override = CloudPicklePool
+    # before calling bt.optimize() to handle unpicklable strategy classes
+    if _pool_override is not None:
+        return _pool_override(processes, initializer, initargs)
 
     # mp.set_start_method('forkserver', force=True) # or 'forkserver'
     if mp.get_start_method() == 'spawn':
@@ -89,7 +101,7 @@ def Pool(processes=None, initializer=None, initargs=()):
         warnings.warn(
             "If you want to use multi-process optimization with "
             "`multiprocessing.get_start_method() == 'spawn'` (e.g. on Windows),"
-            "set `backtesting.Pool = multiprocessing.Pool` (or of the desired context) "
+            "set `backtesting._pool_override = CloudPicklePool` (or similar) "
             "and hide `bt.optimize()` call behind a `if __name__ == '__main__'` guard. "
             "Currently using thread-based paralellism, "
             "which might be slightly slower for non-numpy / non-GIL-releasing code. "
