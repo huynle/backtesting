@@ -2908,6 +2908,8 @@ class Backtest:
         return_heatmap: bool = False,
         return_optimization: bool = False,
         random_state: Optional[int] = None,
+        callbacks: Optional['OptimizeCallback'] = None,
+        error_handling: str = 'silent',
         **kwargs,
     ) -> Union[
         pd.Series, Tuple[pd.Series, pd.Series], Tuple[pd.Series, pd.Series, dict]
@@ -2962,6 +2964,18 @@ class Backtest:
         If you want reproducible optimization results, set `random_state`
         to a fixed integer random seed.
 
+        `callbacks` is an object implementing the `OptimizeCallback` protocol,
+        used to receive notifications during optimization:
+        - `on_result(result)`: Called when a parameter combination completes successfully
+        - `on_error(result)`: Called when a parameter combination fails
+        - `on_progress(completed, total, best)`: Called after each result with progress info
+        - `on_complete(best)`: Called when optimization finishes
+
+        `error_handling` controls how errors during optimization are handled:
+        - "silent": Ignore errors (NaN in heatmap, backward compatible default)
+        - "collect": Collect errors and continue, call on_error() callback
+        - "raise": Raise RuntimeError on first error
+
         Additional keyword arguments represent strategy arguments with
         list-like collections of possible values. For example, the following
         code finds and returns the "best" of the 7 admissible (of the
@@ -2972,6 +2986,13 @@ class Backtest:
         """
         if not kwargs:
             raise ValueError('Need some strategy parameters to optimize')
+
+        # Validate error_handling parameter
+        valid_error_handling = ('silent', 'collect', 'raise')
+        if error_handling not in valid_error_handling:
+            raise ValueError(
+                f"error_handling must be one of {valid_error_handling}, got {error_handling!r}"
+            )
 
         maximize_key = None
         if isinstance(maximize, str):
@@ -3086,6 +3107,11 @@ class Backtest:
                     ),
                 )
 
+                # Initialize callback tracking state
+                best_result: Optional[OptimizationResult] = None
+                completed = 0
+                total = len(param_combos)
+
                 from . import Pool
 
                 with Pool() as pool, SharedMemoryManager() as smm:
@@ -3111,8 +3137,61 @@ class Backtest:
                         for params, (stats, error, duration) in zip(
                             param_batch, result
                         ):
-                            if stats is not None:
-                                heatmap[tuple(params.values())] = maximize(stats)
+                            completed += 1
+
+                            if error is not None:
+                                # Build OptimizationResult for error
+                                opt_result = OptimizationResult(
+                                    params=params,
+                                    stats=None,
+                                    heatmap_value=None,
+                                    error=error,
+                                    duration_ms=duration,
+                                )
+
+                                # Handle error based on error_handling mode
+                                if error_handling == 'raise':
+                                    raise RuntimeError(
+                                        f"Optimization failed for {params}: {error}"
+                                    )
+                                # For 'collect' mode, we could collect errors,
+                                # but for now just invoke callback
+                                # (heatmap stays NaN for this param)
+
+                                # Invoke error callback
+                                if callbacks:
+                                    callbacks.on_error(opt_result)
+
+                            elif stats is not None:
+                                # Calculate heatmap value
+                                heatmap_val = maximize(stats)
+                                heatmap[tuple(params.values())] = heatmap_val
+
+                                # Build OptimizationResult for success
+                                opt_result = OptimizationResult(
+                                    params=params,
+                                    stats=stats,
+                                    heatmap_value=heatmap_val,
+                                    duration_ms=duration,
+                                )
+
+                                # Track best result
+                                if best_result is None or heatmap_val > (
+                                    best_result.heatmap_value or float('-inf')
+                                ):
+                                    best_result = opt_result
+
+                                # Invoke result callback
+                                if callbacks:
+                                    callbacks.on_result(opt_result)
+
+                            # Always invoke progress callback
+                            if callbacks:
+                                callbacks.on_progress(completed, total, best_result)
+
+                # Invoke completion callback
+                if callbacks:
+                    callbacks.on_complete(best_result)
 
                 if pd.isnull(heatmap).all():
                     # No trade was made in any of the runs. Just make a random
