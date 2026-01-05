@@ -3154,13 +3154,15 @@ class Backtest:
                                     raise RuntimeError(
                                         f"Optimization failed for {params}: {error}"
                                     )
-                                # For 'collect' mode, we could collect errors,
-                                # but for now just invoke callback
-                                # (heatmap stays NaN for this param)
+                                # For 'collect' and 'silent' modes, errors are passed
+                                # to the callback; heatmap stays NaN for this param
 
-                                # Invoke error callback
-                                if callbacks:
-                                    callbacks.on_error(opt_result)
+                                # Invoke error callback (with defensive check)
+                                if callbacks and hasattr(callbacks, 'on_error'):
+                                    try:
+                                        callbacks.on_error(opt_result)
+                                    except Exception:
+                                        pass  # Don't let callback errors break optimization
 
                             elif stats is not None:
                                 # Calculate heatmap value
@@ -3181,17 +3183,26 @@ class Backtest:
                                 ):
                                     best_result = opt_result
 
-                                # Invoke result callback
-                                if callbacks:
-                                    callbacks.on_result(opt_result)
+                                # Invoke result callback (with defensive check)
+                                if callbacks and hasattr(callbacks, 'on_result'):
+                                    try:
+                                        callbacks.on_result(opt_result)
+                                    except Exception:
+                                        pass  # Don't let callback errors break optimization
 
-                            # Always invoke progress callback
-                            if callbacks:
-                                callbacks.on_progress(completed, total, best_result)
+                            # Always invoke progress callback (with defensive check)
+                            if callbacks and hasattr(callbacks, 'on_progress'):
+                                try:
+                                    callbacks.on_progress(completed, total, best_result)
+                                except Exception:
+                                    pass  # Don't let callback errors break optimization
 
-                # Invoke completion callback
-                if callbacks:
-                    callbacks.on_complete(best_result)
+                # Invoke completion callback (with defensive check)
+                if callbacks and hasattr(callbacks, 'on_complete'):
+                    try:
+                        callbacks.on_complete(best_result)
+                    except Exception:
+                        pass  # Don't let callback errors break optimization
 
                 if pd.isnull(heatmap).all():
                     # No trade was made in any of the runs. Just make a random
@@ -3241,12 +3252,98 @@ class Backtest:
                     else:
                         dimensions.append(values.tolist())
 
+                # Track callback state for SAMBO optimization
+                sambo_best_result: Optional[OptimizationResult] = None
+                sambo_completed = 0
+
                 # Avoid recomputing re-evaluations
                 @lru_cache()
                 def memoized_run(tup):
-                    nonlocal maximize, self
-                    stats = self.run(**dict(tup))
-                    return -maximize(stats)
+                    nonlocal \
+                        maximize, \
+                        self, \
+                        sambo_best_result, \
+                        sambo_completed, \
+                        callbacks, \
+                        max_tries
+                    params = dict(tup)
+                    start = time.perf_counter()
+                    try:
+                        stats = self.run(**params)
+                        duration = (time.perf_counter() - start) * 1000
+                        heatmap_val = -maximize(
+                            stats
+                        )  # Negative because SAMBO minimizes
+
+                        # Build OptimizationResult and invoke callbacks
+                        if stats['# Trades']:
+                            opt_result = OptimizationResult(
+                                params=params,
+                                stats=stats,
+                                heatmap_value=-heatmap_val,  # Back to positive for callback
+                                duration_ms=duration,
+                            )
+                            # Track best
+                            if sambo_best_result is None or (-heatmap_val) > (
+                                sambo_best_result.heatmap_value or float('-inf')
+                            ):
+                                sambo_best_result = opt_result
+
+                            # Invoke result callback
+                            if callbacks and hasattr(callbacks, 'on_result'):
+                                try:
+                                    callbacks.on_result(opt_result)
+                                except Exception:
+                                    pass
+
+                        sambo_completed += 1
+
+                        # Invoke progress callback
+                        if callbacks and hasattr(callbacks, 'on_progress'):
+                            try:
+                                callbacks.on_progress(
+                                    sambo_completed, max_tries, sambo_best_result
+                                )
+                            except Exception:
+                                pass
+
+                        return heatmap_val
+                    except Exception as e:
+                        duration = (time.perf_counter() - start) * 1000
+                        sambo_completed += 1
+
+                        # Build error OptimizationResult
+                        opt_result = OptimizationResult(
+                            params=params,
+                            stats=None,
+                            heatmap_value=None,
+                            error=str(e),
+                            duration_ms=duration,
+                        )
+
+                        # Handle error based on mode
+                        if error_handling == 'raise':
+                            raise RuntimeError(
+                                f"Optimization failed for {params}: {e}"
+                            ) from e
+
+                        # Invoke error callback
+                        if callbacks and hasattr(callbacks, 'on_error'):
+                            try:
+                                callbacks.on_error(opt_result)
+                            except Exception:
+                                pass
+
+                        # Invoke progress callback
+                        if callbacks and hasattr(callbacks, 'on_progress'):
+                            try:
+                                callbacks.on_progress(
+                                    sambo_completed, max_tries, sambo_best_result
+                                )
+                            except Exception:
+                                pass
+
+                        return 0  # Return 0 for failed evaluations
 
                 progress = iter(
                     _tqdm(
@@ -3298,6 +3395,13 @@ class Backtest:
 
                 if return_optimization:
                     output.append(res)
+
+                # Invoke completion callback for SAMBO
+                if callbacks and hasattr(callbacks, 'on_complete'):
+                    try:
+                        callbacks.on_complete(sambo_best_result)
+                    except Exception:
+                        pass  # Don't let callback errors break optimization
 
                 return stats if len(output) == 1 else tuple(output)
 
