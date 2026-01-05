@@ -4,6 +4,8 @@ on:
   pull_request: { branches: [master] }
   schedule: [ cron: '2 2 * * 6' ]  # Every Saturday, 02:02
 
+env:
+  TQDM_MININTERVAL: 10
 jobs:
   lint:
     runs-on: ubuntu-latest
@@ -66,7 +68,7 @@ jobs:
       - build
       - docs
     runs-on: windows-latest
-    timeout-minutes: 4
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

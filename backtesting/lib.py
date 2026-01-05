@@ -13,7 +13,6 @@ Please raise ideas for additions to this collection on the [issue tracker].
 
 from __future__ import annotations
 
-import multiprocessing as mp
 import warnings
 from collections import OrderedDict
 from inspect import currentframe
@@ -26,7 +25,7 @@ import pandas as pd
 
 from ._plotting import plot_heatmaps as _plot_heatmaps
 from ._stats import compute_stats as _compute_stats
-from ._util import SharedMemoryManager, _Array, _as_str, _batch, _tqdm
+from ._util import SharedMemoryManager, _Array, _as_str, _batch, _tqdm, patch
 from .backtesting import Backtest, Strategy
 
 __pdoc__ = {}
@@ -497,7 +496,7 @@ class TrailingStrategy(Strategy):
     def next(self):
         super().next()
         # Can't use index=-1 because self.__atr is not an Indicator type
-        index = len(self.data)-1
+        index = len(self.data) - 1
         for trade in self.trades:
             if trade.is_long:
                 trade.sl = max(trade.sl or -np.inf,
@@ -534,10 +533,30 @@ class FractionalBacktest(Backtest):
                 'Use `FractionalBacktest(..., fractional_unit=)`.',
                 category=DeprecationWarning, stacklevel=2)
             fractional_unit = 1 / kwargs.pop('satoshi')
-        data = data.copy()
-        data[['Open', 'High', 'Low', 'Close']] *= fractional_unit
-        data['Volume'] /= fractional_unit
-        super().__init__(data, *args, **kwargs)
+        self._fractional_unit = fractional_unit
+        self.__data: pd.DataFrame = data.copy(deep=False)  # Shallow copy
+        for col in ('Open', 'High', 'Low', 'Close',):
+            self.__data[col] = self.__data[col] * self._fractional_unit
+        for col in ('Volume',):
+            self.__data[col] = self.__data[col] / self._fractional_unit
+        with warnings.catch_warnings(record=True):
+            warnings.filterwarnings(action='ignore', message='frac')
+            super().__init__(data, *args, **kwargs)
+
+    def run(self, **kwargs) -> pd.Series:
+        with patch(self, '_data', self.__data):
+            result = super().run(**kwargs)
+
+        trades: pd.DataFrame = result['_trades']
+        trades['Size'] *= self._fractional_unit
+        trades[['EntryPrice', 'ExitPrice', 'TP', 'SL']] /= self._fractional_unit
+
+        indicators = result['_strategy']._indicators
+        for indicator in indicators:
+            if indicator._opts['overlay']:
+                indicator /= self._fractional_unit
+
+        return result
 
 
 # Prevent pdoc3 documenting __init__ signature of Strategy subclasses
@@ -569,7 +588,8 @@ class MultiBacktest:
         Wraps `backtesting.backtesting.Backtest.run`. Returns `pd.DataFrame` with
         currency indexes in columns.
         """
-        with mp.Pool() as pool, \
+        from . import Pool
+        with Pool() as pool, \
                 SharedMemoryManager() as smm:
             shm = [smm.df2shm(df) for df in self._dfs]
             results = _tqdm(
@@ -577,7 +597,8 @@ class MultiBacktest:
                           ((df_batch, self._strategy, self._bt_kwargs, kwargs)
                            for df_batch in _batch(shm))),
                 total=len(shm),
-                desc=self.__class__.__name__,
+                desc=self.run.__qualname__,
+                mininterval=2
             )
             df = pd.DataFrame(list(chain(*results))).transpose()
         return df
@@ -605,7 +626,7 @@ class MultiBacktest:
         """
         heatmaps = []
         # Simple loop since bt.optimize already does its own multiprocessing
-        for df in _tqdm(self._dfs, desc=self.__class__.__name__):
+        for df in _tqdm(self._dfs, desc=self.__class__.__name__, mininterval=2):
             bt = Backtest(df, self._strategy, **self._bt_kwargs)
             _best_stats, heatmap = bt.optimize(  # type: ignore
                 return_heatmap=True, return_optimization=False, **kwargs)
@@ -618,7 +639,7 @@ class MultiBacktest:
 
 __all__ = [getattr(v, '__name__', k)
            for k, v in globals().items()                        # export
-           if ((callable(v) and v.__module__ == __name__ or     # callables from this module
+           if ((callable(v) and getattr(v, '__module__', None) == __name__ or  # callables from this module
                 k.isupper()) and                                # or CONSTANTS
                not getattr(v, '__name__', k).startswith('_'))]  # neither marked internal
 

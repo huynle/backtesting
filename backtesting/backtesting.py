@@ -8,11 +8,11 @@ module directly, e.g.
 
 from __future__ import annotations
 
-import multiprocessing as mp
 import sys
 import warnings
 from abc import ABCMeta, abstractmethod
 from copy import copy
+from difflib import get_close_matches
 from functools import lru_cache, partial
 from itertools import chain, product, repeat
 from math import copysign
@@ -24,7 +24,7 @@ import pandas as pd
 from numpy.random import default_rng
 
 from ._plotting import plot  # noqa: I001
-from ._stats import compute_stats
+from ._stats import compute_stats, dummy_stats
 from ._util import (
     SharedMemoryManager, _as_str, _Indicator, _Data, _batch, _indicator_warmup_nbars,
     _strategy_indicators, patch, try_, _tqdm,
@@ -65,10 +65,12 @@ class Strategy(metaclass=ABCMeta):
     def _check_params(self, params):
         for k, v in params.items():
             if not hasattr(self, k):
+                suggestions = get_close_matches(k, (attr for attr in dir(self) if not attr.startswith('_')))
+                hint = f" Did you mean: {', '.join(suggestions)}?" if suggestions else ""
                 raise AttributeError(
-                    f"Strategy '{self.__class__.__name__}' is missing parameter '{k}'."
+                    f"Strategy '{self.__class__.__name__}' is missing parameter '{k}'. "
                     "Strategy class should define parameters as class variables before they "
-                    "can be optimized or run with.")
+                    "can be optimized or run with." + hint)
             setattr(self, k, v)
         return params
 
@@ -165,7 +167,7 @@ class Strategy(metaclass=ABCMeta):
                 f'length as `data` (data shape: {self._data.Close.shape}; indicator "{name}" '
                 f'shape: {getattr(value, "shape", "")}, returned value: {value})')
 
-        if plot and overlay is None and np.issubdtype(value.dtype, np.number):
+        if overlay is None and np.issubdtype(value.dtype, np.number):
             x = value / self._data.Close
             # By default, overlay if strong majority of indicator values
             # is within 30% of Close
@@ -211,7 +213,7 @@ class Strategy(metaclass=ABCMeta):
         """
 
     class __FULL_EQUITY(float):  # noqa: N801
-        def __repr__(self): return '.9999'
+        def __repr__(self): return '.9999'  # noqa: E704
     _FULL_EQUITY = __FULL_EQUITY(1 - sys.float_info.epsilon)
 
     def buy(self, *,
@@ -310,7 +312,7 @@ class Strategy(metaclass=ABCMeta):
     @property
     def orders(self) -> 'Tuple[Order, ...]':
         """List of orders (see `Order`) waiting for execution."""
-        return _Orders(self._broker.orders)
+        return tuple(self._broker.orders)
 
     @property
     def trades(self) -> 'Tuple[Trade, ...]':
@@ -321,27 +323,6 @@ class Strategy(metaclass=ABCMeta):
     def closed_trades(self) -> 'Tuple[Trade, ...]':
         """List of settled trades (see `Trade`)."""
         return tuple(self._broker.closed_trades)
-
-
-class _Orders(tuple):
-    """
-    TODO: remove this class. Only for deprecation.
-    """
-    def cancel(self):
-        """Cancel all non-contingent (i.e. SL/TP) orders."""
-        for order in self:
-            if not order.is_contingent:
-                order.cancel()
-
-    def __getattr__(self, item):
-        # TODO: Warn on deprecations from the previous version. Remove in the next.
-        removed_attrs = ('entry', 'set_entry', 'is_long', 'is_short',
-                         'sl', 'tp', 'set_sl', 'set_tp')
-        if item in removed_attrs:
-            raise AttributeError(f'Strategy.orders.{"/.".join(removed_attrs)} were removed in'
-                                 'Backtesting 0.2.0. '
-                                 'Use `Order` API instead. See docs.')
-        raise AttributeError(f"'tuple' object has no attribute {item!r}")
 
 
 class Position:
@@ -449,7 +430,7 @@ class Order:
                                                  ('tp', self.__tp_price),
                                                  ('contingent', self.is_contingent),
                                                  ('tag', self.__tag),
-                                             ) if value is not None))
+                                             ) if value is not None))  # noqa: E126
 
     def cancel(self):
         """Cancel the order."""
@@ -578,7 +559,7 @@ class Trade:
     def __repr__(self):
         return f'<Trade size={self.__size} time={self.__entry_bar}-{self.__exit_bar or ""} ' \
                f'price={self.__entry_price}-{self.__exit_price or ""} pl={self.pl:.0f}' \
-               f'{" tag="+str(self.__tag) if self.__tag is not None else ""}>'
+               f'{" tag=" + str(self.__tag) if self.__tag is not None else ""}>'
 
     def _replace(self, **kwargs):
         for k, v in kwargs.items():
@@ -591,7 +572,8 @@ class Trade:
     def close(self, portion: float = 1.):
         """Place new `Order` to close `portion` of the trade at next market price."""
         assert 0 < portion <= 1, "portion must be a fraction between 0 and 1"
-        size = copysign(max(1, round(abs(self.__size) * portion)), -self.__size)
+        # Ensure size is an int to avoid rounding errors on 32-bit OS
+        size = copysign(max(1, int(round(abs(self.__size) * portion))), -self.__size)
         order = Order(self.__broker, size, parent_trade=self, tag=self.__tag)
         self.__broker.orders.insert(0, order)
 
@@ -672,15 +654,22 @@ class Trade:
 
     @property
     def pl(self):
-        """Trade profit (positive) or loss (negative) in cash units."""
+        """
+        Trade profit (positive) or loss (negative) in cash units.
+        Commissions are reflected only after the Trade is closed.
+        """
         price = self.__exit_price or self.__broker.last_price
-        return self.__size * (price - self.__entry_price)
+        return (self.__size * (price - self.__entry_price)) - self._commissions
 
     @property
     def pl_pct(self):
-        """Trade profit (positive) or loss (negative) in percent."""
+        """Trade profit (positive) or loss (negative) in percent relative to trade entry price."""
         price = self.__exit_price or self.__broker.last_price
-        return copysign(1, self.__size) * (price / self.__entry_price - 1)
+        gross_pl_pct = copysign(1, self.__size) * (price / self.__entry_price - 1)
+
+        # Total commission across the entire trade size to individual units
+        commission_pct = self._commissions / (abs(self.__size) * self.__entry_price)
+        return gross_pl_pct - commission_pct
 
     @property
     def value(self):
@@ -927,6 +916,9 @@ class _Broker:
                 if trade in self.trades:
                     self._reduce_trade(trade, price, size, time_index)
                     assert order.size != -_prev_size or trade not in self.trades
+                    if price == stop_price:
+                        # Set SL back on the order for stats._trades["SL"]
+                        trade._sl_order._replace(stop_price=stop_price)
                 if order in (trade._sl_order,
                              trade._tp_order):
                     assert order.size == -trade.size
@@ -942,7 +934,8 @@ class _Broker:
             # Adjust price to include commission (or bid-ask spread).
             # In long positions, the adjusted price is a fraction higher, and vice versa.
             adjusted_price = self._adjusted_price(order.size, price)
-            adjusted_price_plus_commission = adjusted_price + self._commission(order.size, price)
+            adjusted_price_plus_commission = \
+                adjusted_price + self._commission(order.size, price) / abs(order.size)
 
             # If order size was specified proportionally,
             # precompute true size in units, accounting for margin and spread/commissions
@@ -953,8 +946,9 @@ class _Broker:
                 # Not enough cash/margin even for a single unit
                 if not size:
                     warnings.warn(
-                        f'time={self._i}: Broker canceled the relative-sized '
-                        f'order due to insufficient margin.', category=UserWarning)
+                        f'time={self._i}: Broker canceled the relative-sized order due to insufficient margin '
+                        f'(equity={self.equity:.2f}, margin_available={self.margin_available:.2f}).',
+                        category=UserWarning)
                     # XXX: The order is canceled by the broker?
                     self.orders.remove(order)
                     continue
@@ -987,6 +981,10 @@ class _Broker:
             # If we don't have enough liquidity to cover for the order, the broker CANCELS it
             if abs(need_size) * adjusted_price_plus_commission > \
                     self.margin_available * self._leverage:
+                warnings.warn(
+                    f'time={self._i}: Broker canceled the order due to insufficient margin '
+                    f'(equity={self.equity:.2f}, margin_available={self.margin_available:.2f}).',
+                    category=UserWarning)
                 self.orders.remove(order)
                 continue
 
@@ -1110,7 +1108,7 @@ class Backtest:
 
     `cash` is the initial cash to start with.
 
-    `spread` is the the constant bid-ask spread rate (relative to the price).
+    `spread` is the constant bid-ask spread rate (relative to the price).
     E.g. set it to `0.0002` for commission-less forex
     trading where the average spread is roughly 0.2‰ of the asking price.
 
@@ -1140,7 +1138,7 @@ class Backtest:
 
     `margin` is the required margin (ratio) of a leveraged account.
     No difference is made between initial and maintenance margins.
-    To run the backtest using e.g. 50:1 leverge that your broker allows,
+    To run the backtest using e.g. 50:1 leverage that your broker allows,
     set margin to `0.02` (1 / leverage).
 
     If `trade_on_close` is `True`, market orders will be filled
@@ -1219,8 +1217,9 @@ class Backtest:
                              'fill them in with `df.interpolate()` or whatever.')
         if np.any(data['Close'] > cash):
             warnings.warn('Some prices are larger than initial cash value. Note that fractional '
-                          'trading is not supported. If you want to trade Bitcoin, '
-                          'increase initial cash, or trade μBTC or satoshis instead (GH-134).',
+                          'trading is not supported by this class. If you want to trade Bitcoin, '
+                          'increase initial cash, or trade μBTC or satoshis instead (see e.g. class '
+                          '`backtesting.lib.FractionalBacktest`.',
                           stacklevel=2)
         if not data.index.is_monotonic_increasing:
             warnings.warn('Data index is not sorted in ascending order. Sorting.',
@@ -1309,7 +1308,8 @@ class Backtest:
         # np.nan >= 3 is not invalid; it's False.
         with np.errstate(invalid='ignore'):
 
-            for i in _tqdm(range(start, len(self._data)), desc=self.run.__qualname__):
+            for i in _tqdm(range(start, len(self._data)), desc=self.run.__qualname__,
+                           unit='bar', mininterval=2, miniters=100):
                 # Prepare data and indicators for `next` call
                 data._set_length(i + 1)
                 for attr, indicator in indicator_attrs:
@@ -1334,6 +1334,11 @@ class Backtest:
                     #  strategy iteration. Use the same OHLC values as in the last broker iteration.
                     if start < len(self._data):
                         try_(broker.next, exception=_OutOfMoneyError)
+                elif len(broker.trades):
+                    warnings.warn(
+                        'Some trades remain open at the end of backtest. Use '
+                        '`Backtest(..., finalize_trades=True)` to close them and '
+                        'include them in stats.', stacklevel=2)
 
             # Set data back to full length
             # for future `indicator._opts['data'].index` calls to work
@@ -1425,9 +1430,7 @@ class Backtest:
         maximize_key = None
         if isinstance(maximize, str):
             maximize_key = str(maximize)
-            stats_keys = compute_stats(
-                [], np.r_[[np.nan]], pd.DataFrame({col: [np.nan] for col in ('Close',)}), None, 0).index
-            if maximize not in stats_keys:
+            if maximize not in dummy_stats().index:
                 raise ValueError('`maximize`, if str, must match a key in pd.Series '
                                  'result of backtest.run()')
 
@@ -1503,9 +1506,9 @@ class Backtest:
                                     [p.values() for p in param_combos],
                                     names=next(iter(param_combos)).keys()))
 
-            with mp.Pool() as pool, \
+            from . import Pool
+            with Pool() as pool, \
                     SharedMemoryManager() as smm:
-
                 with patch(self, '_data', None):
                     bt = copy(self)  # bt._data will be reassigned in _mp_task worker
                 results = _tqdm(
@@ -1567,7 +1570,8 @@ class Backtest:
                 stats = self.run(**dict(tup))
                 return -maximize(stats)
 
-            progress = iter(_tqdm(repeat(None), total=max_tries, leave=False, desc='Backtest.optimize'))
+            progress = iter(_tqdm(repeat(None), total=max_tries, leave=False,
+                                  desc=self.optimize.__qualname__, mininterval=2))
             _names = tuple(kwargs.keys())
 
             def objective_function(x):

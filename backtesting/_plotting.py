@@ -128,11 +128,11 @@ def _maybe_resample_data(resample_rule, df, indicators, equity_data, trades):
             "15min": 15,
             "30min": 30,
             "1h": 60,
-            "2h": 60*2,
-            "4h": 60*4,
-            "8h": 60*8,
-            "1D": 60*24,
-            "1W": 60*24*7,
+            "2h": 60 * 2,
+            "4h": 60 * 4,
+            "8h": 60 * 8,
+            "1D": 60 * 24,
+            "1W": 60 * 24 * 7,
             "1ME": np.inf,
         })
         timespan = df.index[-1] - df.index[0]
@@ -440,8 +440,10 @@ return this.labels[index] || "";
         fig.multi_line(xs='lines',
                        ys=transform('returns', CustomJSTransform(v_func='return [...xs].map(i => [0, i]);')),
                        source=trade_source, color='#999', line_width=1)
-        r1 = fig.scatter('index', 'returns', source=trade_source, fill_color=cmap,
-                         marker='circle', line_color='black', size='marker_size')
+        trade_source.add(np.take(['inverted_triangle', 'triangle'], trades['Size'] > 0), 'triangles')
+        r1 = fig.scatter(
+            'index', 'returns', source=trade_source, fill_color=cmap,
+            marker='triangles', line_color='black', size='marker_size')
         tooltips = [("Size", "@size{0,0}")]
         if 'count' in trades:
             tooltips.append(("Count", "@count{0,0}"))
@@ -547,14 +549,19 @@ return this.labels[index] || "";
 
         for i, value in enumerate(indicators):
             value = np.atleast_2d(value)
+            if _too_many_dims(value):
+                continue
 
             # Use .get()! A user might have assigned a Strategy.data-evolved
             # _Array without Strategy.I()
-            if not value._opts.get('plot') or _too_many_dims(value):
+            is_overlay = value._opts.get('overlay')
+            is_scatter = value._opts.get('scatter')
+            is_muted = not value._opts.get('plot')
+
+            # is overlay => show muted, hide legend item. non-overlay => don't show at all
+            if is_muted and not is_overlay:
                 continue
 
-            is_overlay = value._opts['overlay']
-            is_scatter = value._opts['scatter']
             if is_overlay:
                 fig = fig_ohlc
             else:
@@ -579,30 +586,31 @@ return this.labels[index] || "";
                     arr = arr.astype(int)
                 source.add(arr, source_name)
                 tooltips.append(f'@{{{source_name}}}{{0,0.0[0000]}}')
+                kwargs = {}
+                if not is_muted:
+                    kwargs['legend_label'] = legend_labels[j]
                 if is_overlay:
                     ohlc_extreme_values[source_name] = arr
                     if is_scatter:
-                        fig.circle(
+                        r2 = fig.circle(
                             'index', source_name, source=source,
-                            legend_label=legend_labels[j], color=color,
-                            line_color='black', fill_alpha=.8,
-                            radius=BAR_WIDTH / 2 * .9)
+                            color=color, line_color='black', fill_alpha=.8,
+                            radius=BAR_WIDTH / 2 * .9, **kwargs)
                     else:
-                        fig.line(
+                        r2 = fig.line(
                             'index', source_name, source=source,
-                            legend_label=legend_labels[j], line_color=color,
-                            line_width=1.3)
+                            line_color=color, line_width=1.4 if is_muted else 1.5, **kwargs)
+                    # r != r2
+                    r2.muted = is_muted
                 else:
                     if is_scatter:
                         r = fig.circle(
                             'index', source_name, source=source,
-                            legend_label=legend_labels[j], color=color,
-                            radius=BAR_WIDTH / 2 * .6)
+                            color=color, radius=BAR_WIDTH / 2 * .6, **kwargs)
                     else:
                         r = fig.line(
                             'index', source_name, source=source,
-                            legend_label=legend_labels[j], line_color=color,
-                            line_width=1.3)
+                            line_color=color, line_width=1.3, **kwargs)
                     # Add dashed centerline just because
                     mean = try_(lambda: float(pd.Series(arr).mean()), default=np.nan)
                     if not np.isnan(mean) and (abs(mean) < .1 or
@@ -683,6 +691,7 @@ return this.labels[index] || "";
             f.legend.margin = 0
             f.legend.label_text_font_size = '8pt'
             f.legend.click_policy = "hide"
+            f.legend.background_fill_alpha = .9
         f.min_border_left = 0
         f.min_border_top = 3
         f.min_border_bottom = 6
