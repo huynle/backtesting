@@ -216,7 +216,7 @@ class MLTrainOnceStrategy(Strategy):
                     trade.sl = min(trade.sl, high)
 
 
-bt = Backtest(data, MLTrainOnceStrategy, commission=.0002, margin=.05)
+bt = Backtest(GOOG, MLTrainOnceStrategy, commission=.0002, margin=.05)
 bt.run()
 
 # %%
@@ -254,7 +254,7 @@ class MLWalkForwardStrategy(MLTrainOnceStrategy):
         super().next()
 
 
-bt = Backtest(data, MLWalkForwardStrategy, commission=.0002, margin=.05)
+bt = Backtest(GOOG, MLWalkForwardStrategy, commission=.0002, margin=.05)
 bt.run()
 
 # %%
