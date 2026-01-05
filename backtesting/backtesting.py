@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import functools
 import sys
+import time
 import warnings
 import traceback
 from abc import ABC, abstractmethod
@@ -3098,6 +3099,7 @@ class Backtest:
                                     bt,
                                     smm.df2shm(self._data_dict),
                                     params_batch,
+                                    False,  # return_all_stats
                                 )  # Pass the dict
                                 for params_batch in _batch(param_combos)
                             ),
@@ -3106,7 +3108,9 @@ class Backtest:
                         desc='Backtest.optimize',
                     )
                     for param_batch, result in zip(_batch(param_combos), results):
-                        for params, stats in zip(param_batch, result):
+                        for params, (stats, error, duration) in zip(
+                            param_batch, result
+                        ):
                             if stats is not None:
                                 heatmap[tuple(params.values())] = maximize(stats)
 
@@ -3231,14 +3235,42 @@ class Backtest:
 
     @staticmethod
     def _mp_task(arg):
-        bt, data_dict_shm_info, params_batch = arg
+        """Execute a batch of parameter combinations for parallel optimization.
+
+        Args:
+            arg: Tuple of (bt, data_dict_shm_info, params_batch, return_all_stats)
+                - bt: Backtest instance (with _data_dict set to None)
+                - data_dict_shm_info: SharedMemory info for data reconstruction
+                - params_batch: List of parameter dicts to run
+                - return_all_stats: If True, include _trades, _equity_curve etc.
+
+        Returns:
+            List of tuples: (stats, error, duration_ms) for each param combination
+                - stats: pd.Series of results (None if no trades or error)
+                - error: Error message string (None if successful)
+                - duration_ms: Execution time in milliseconds
+        """
+        bt, data_dict_shm_info, params_batch, return_all_stats = arg
         # data_dict_shm_info is the result of smm.df2shm(self._data_dict)
         bt._data_dict, shm_list = SharedMemoryManager.shm2df(data_dict_shm_info)
+        results = []
         try:
-            return [
-                stats.filter(regex='^[^_]') if stats['# Trades'] else None
-                for stats in (bt.run(**params) for params in params_batch)
-            ]
+            for params in params_batch:
+                start = time.perf_counter()
+                try:
+                    stats = bt.run(**params)
+                    duration = (time.perf_counter() - start) * 1000
+                    if stats['# Trades']:
+                        out_stats = (
+                            stats if return_all_stats else stats.filter(regex='^[^_]')
+                        )
+                        results.append((out_stats, None, duration))
+                    else:
+                        results.append((None, None, duration))
+                except Exception as e:
+                    duration = (time.perf_counter() - start) * 1000
+                    results.append((None, str(e), duration))
+            return results
         finally:
             for shmem_obj in shm_list:
                 shmem_obj.close()
