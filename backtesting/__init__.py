@@ -64,33 +64,55 @@ itself find their way back to the community.
 try:
     from ._version import version as __version__
 except ImportError:
-    __version__ = "?.?.?"  # Package not installed
+    __version__ = '?.?.?'  # Package not installed
 
 from . import lib  # noqa: F401
 from ._plotting import set_bokeh_output  # noqa: F401
-from ._util import try_
-from .backtesting import Backtest, Strategy  # noqa: F401
+from .backtesting import (  # noqa: F401
+    Allocation,
+    Backtest,
+    OptimizationResult,
+    OptimizeCallback,
+    Strategy,
+)
 
 
 # Add overridable backtesting.Pool used for parallel optimization
+# Users can override this by setting backtesting._pool_override = CustomPool
+# The _pool_override attribute is checked first to allow for cloudpickle or other
+# custom serialization pools that can handle closures and dynamic classes.
+_pool_override = None
+
+
 def Pool(processes=None, initializer=None, initargs=()):
+    import platform
     import multiprocessing as mp
-    import sys
-    # Revert performance related change in Python>=3.14
-    if sys.platform.startswith('linux') and mp.get_start_method(allow_none=True) != 'fork':
-        try_(lambda: mp.set_start_method('fork'))
+
+    # Check for custom pool override (e.g., CloudPicklePool)
+    # This allows users to set backtesting._pool_override = CloudPicklePool
+    # before calling bt.optimize() to handle unpicklable strategy classes
+    if _pool_override is not None:
+        return _pool_override(processes, initializer, initargs)
+
+    # mp.set_start_method('forkserver', force=True) # or 'forkserver'
     if mp.get_start_method() == 'spawn':
         import warnings
+
         warnings.warn(
             "If you want to use multi-process optimization with "
             "`multiprocessing.get_start_method() == 'spawn'` (e.g. on Windows),"
-            "set `backtesting.Pool = multiprocessing.Pool` (or of the desired context) "
+            "set `backtesting._pool_override = CloudPicklePool` (or similar) "
             "and hide `bt.optimize()` call behind a `if __name__ == '__main__'` guard. "
             "Currently using thread-based paralellism, "
             "which might be slightly slower for non-numpy / non-GIL-releasing code. "
             "See https://github.com/kernc/backtesting.py/issues/1256",
-            category=RuntimeWarning, stacklevel=3)
+            category=RuntimeWarning,
+            stacklevel=3,
+        )
         from multiprocessing.dummy import Pool
+
+        if platform.system() in ["Darwin", "Linux"]:
+            Pool = mp.Pool
         return Pool(processes, initializer, initargs)
     else:
         return mp.Pool(processes, initializer, initargs)

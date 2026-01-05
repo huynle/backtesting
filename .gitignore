@@ -2,6 +2,7 @@
 *.html
 *.png
 _version.py
+.aider.*
 
 *.egg-info
 .eggs/*

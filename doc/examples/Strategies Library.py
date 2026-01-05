@@ -88,9 +88,9 @@ class SmaCross(SignalStrategy,
 
 # %%
 from backtesting import Backtest
-from backtesting.test import data
+from backtesting.test import GOOG
 
-bt = Backtest(data, SmaCross, commission=.002)
+bt = Backtest(GOOG, SmaCross, commission=.002)
 
 bt.run()
 bt.plot()

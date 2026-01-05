@@ -99,10 +99,10 @@ class Sma4Cross(Strategy):
 # %%time 
 
 from backtesting import Backtest
-from backtesting.test import data
+from backtesting.test import GOOG
 
 
-backtest = Backtest(data, Sma4Cross, commission=.002)
+backtest = Backtest(GOOG, Sma4Cross, commission=.002)
 
 stats, heatmap = backtest.optimize(
     n1=range(10, 110, 10),

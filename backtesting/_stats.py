@@ -8,7 +8,7 @@ import pandas as pd
 from ._util import _data_period, _indicator_warmup_nbars
 
 if TYPE_CHECKING:
-    from .backtesting import Strategy, Trade
+    from .backtesting import Order, Strategy, Trade
 
 
 def compute_drawdown_duration_peaks(dd: pd.Series):
@@ -21,8 +21,12 @@ def compute_drawdown_duration_peaks(dd: pd.Series):
     if not len(df):
         return (dd.replace(0, np.nan),) * 2
 
-    df['duration'] = df['iloc'].map(dd.index.__getitem__) - df['prev'].map(dd.index.__getitem__)
-    df['peak_dd'] = df.apply(lambda row: dd.iloc[row['prev']:row['iloc'] + 1].max(), axis=1)
+    df['duration'] = df['iloc'].map(dd.index.__getitem__) - df['prev'].map(
+        dd.index.__getitem__
+    )
+    df['peak_dd'] = df.apply(
+        lambda row: dd.iloc[row['prev'] : row['iloc'] + 1].max(), axis=1
+    )
     df = df.reindex(dd.index)
     return df['duration'], df['peak_dd']
 
@@ -35,43 +39,64 @@ def geometric_mean(returns: pd.Series) -> float:
 
 
 def compute_stats(
-        trades: Union[List['Trade'], pd.DataFrame],
-        equity: np.ndarray,
-        ohlc_data: pd.DataFrame,
-        strategy_instance: Strategy | None,
-        risk_free_rate: float = 0,
+    orders: Union[List['Order'], pd.DataFrame],
+    trades: Union[List['Trade'], pd.DataFrame],
+    equity: pd.DataFrame,
+    ohlc_data: pd.DataFrame,
+    strategy_instance: 'Strategy' | None,
+    risk_free_rate: float = 0,
+    positions: dict = None,
+    trade_start_bar: int = 0,
 ) -> pd.Series:
     assert -1 < risk_free_rate < 1
 
     index = ohlc_data.index
-    dd = 1 - equity / np.maximum.accumulate(equity)
+    dd = 1 - equity['Equity'] / np.maximum.accumulate(equity['Equity'])
     dd_dur, dd_peaks = compute_drawdown_duration_peaks(pd.Series(dd, index=index))
 
-    equity_df = pd.DataFrame({
-        'Equity': equity,
-        'DrawdownPct': dd,
-        'DrawdownDuration': dd_dur},
-        index=index)
+    if isinstance(orders, pd.DataFrame):
+        orders_df = orders
+    else:
+        orders_df = pd.DataFrame(
+            {
+                'SignalTime': [t.entry_time for t in orders],
+                'Ticker': [t.ticker for t in orders],
+                'Side': ['Buy' if t.size > 0 else 'Sell' for t in orders],
+                'Size': [int(t.size) for t in orders],
+            }
+        ).set_index('SignalTime')
+
+    equity_df = pd.concat(
+        [
+            equity,
+            pd.DataFrame({'DrawdownPct': dd, 'DrawdownDuration': dd_dur}, index=index),
+        ],
+        axis=1,
+    )
 
     if isinstance(trades, pd.DataFrame):
         trades_df: pd.DataFrame = trades
         commissions = None  # Not shown
     else:
-        # Came straight from Backtest.run()
-        trades_df = pd.DataFrame({
-            'Size': [t.size for t in trades],
-            'EntryBar': [t.entry_bar for t in trades],
-            'ExitBar': [t.exit_bar for t in trades],
-            'EntryPrice': [t.entry_price for t in trades],
-            'ExitPrice': [t.exit_price for t in trades],
-            'SL': [t.sl for t in trades],
-            'TP': [t.tp for t in trades],
-            'PnL': [t.pl for t in trades],
-            'Commission': [t._commissions for t in trades],
-            'ReturnPct': [t.pl_pct for t in trades],
-            'EntryTime': [t.entry_time for t in trades],
-            'ExitTime': [t.exit_time for t in trades],
-        })
+        # Came straight backtesting.run()
+        trades_df = pd.DataFrame(
+            {
+                'Size': [t.size for t in trades],
+                'EntryBar': [t.entry_bar for t in trades],
+                'ExitBar': [t.exit_bar for t in trades],
+                'Ticker': [t.ticker for t in trades],
+                'EntryPrice': [t.entry_price for t in trades],
+                'ExitPrice': [t.exit_price for t in trades],
+                'SL': [t.sl for t in trades],
+                'TP': [t.tp for t in trades],
+                'PnL': [t.pl for t in trades],
+                'ReturnPct': [t.pl_pct for t in trades],
+                'EntryTime': [t.entry_time for t in trades],
+                'ExitTime': [t.exit_time for t in trades],
+                'Tag': [t.tag for t in trades],
+                'Commissions': [t._commissions for t in trades],
+            }
+        )
         trades_df['Duration'] = trades_df['ExitTime'] - trades_df['EntryTime']
         trades_df['Tag'] = [t.tag for t in trades]
 
@@ -81,8 +106,12 @@ def compute_stats(
                 ind = np.atleast_2d(ind)
                 for i, values in enumerate(ind):  # multi-d indicators
                     suffix = f'_{i}' if len(ind) > 1 else ''
-                    trades_df[f'Entry_{ind.name}{suffix}'] = values[trades_df['EntryBar'].values]
-                    trades_df[f'Exit_{ind.name}{suffix}'] = values[trades_df['ExitBar'].values]
+                    trades_df[f'Entry_{ind.name}{suffix}'] = values[
+                        trades_df['EntryBar'].values
+                    ]
+                    trades_df[f'Exit_{ind.name}{suffix}'] = values[
+                        trades_df['ExitBar'].values
+                    ]
 
         commissions = sum(t._commissions for t in trades)
     del trades
@@ -103,18 +132,31 @@ def compute_stats(
     s.loc['Duration'] = s.End - s.Start
 
     have_position = np.repeat(0, len(index))
-    for t in trades_df[['EntryBar', 'ExitBar']].itertuples(index=False):
-        have_position[t.EntryBar:t.ExitBar + 1] = 1
+    for t in trades_df.itertuples(index=False):
+        have_position[t.EntryBar : t.ExitBar + 1] = 1
 
-    s.loc['Exposure Time [%]'] = have_position.mean() * 100  # In "n bars" time, not index time
-    s.loc['Equity Final [$]'] = equity[-1]
-    s.loc['Equity Peak [$]'] = equity.max()
+    s.loc['Exposure Time [%]'] = (
+        have_position.mean() * 100
+    )  # In "n bars" time, not index time
+    s.loc['Equity Final [$]'] = equity['Equity'].iloc[-1]
+    s.loc['Equity Peak [$]'] = equity['Equity'].max()
+    s.loc['Return [%]'] = (
+        (equity['Equity'].iloc[-1] - equity['Equity'].iloc[0])
+        / equity['Equity'].iloc[0]
+        * 100
+    )
     if commissions:
         s.loc['Commissions [$]'] = commissions
-    s.loc['Return [%]'] = (equity[-1] - equity[0]) / equity[0] * 100
+    s.loc['Return [%]'] = (
+        (equity['Equity'].iloc[-1] - equity['Equity'].iloc[0])
+        / equity['Equity'].iloc[0]
+        * 100
+    )
     first_trading_bar = _indicator_warmup_nbars(strategy_instance)
     c = ohlc_data.Close.values
-    s.loc['Buy & Hold Return [%]'] = (c[-1] - c[first_trading_bar]) / c[first_trading_bar] * 100  # long-only return
+    s.loc['Buy & Hold Return [%]'] = (
+        (c[-1] - c[first_trading_bar]) / c[first_trading_bar] * 100
+    )  # long-only return
 
     gmean_day_return: float = 0
     day_returns = np.array(np.nan)
@@ -122,12 +164,16 @@ def compute_stats(
     is_datetime_index = isinstance(index, pd.DatetimeIndex)
     if is_datetime_index:
         freq_days = cast(pd.Timedelta, _data_period(index)).days
-        have_weekends = index.dayofweek.to_series().between(5, 6).mean() > 2 / 7 * .6
+        have_weekends = index.dayofweek.to_series().between(5, 6).mean() > 2 / 7 * 0.6
         annual_trading_days = (
-            52 if freq_days == 7 else
-            12 if freq_days == 31 else
-            1 if freq_days == 365 else
-            (365 if have_weekends else 252))
+            52
+            if freq_days == 7
+            else 12
+            if freq_days == 31
+            else 1
+            if freq_days == 365
+            else (365 if have_weekends else 252)
+        )
         freq = {7: 'W', 31: 'ME', 365: 'YE'}.get(freq_days, 'D')
         day_returns = equity_df['Equity'].resample(freq).last().dropna().pct_change()
         gmean_day_return = geometric_mean(day_returns)
@@ -136,24 +182,52 @@ def compute_stats(
     # assumption that the returns are compounded. See: https://dx.doi.org/10.2139/ssrn.3054517
     # Our annualized return matches `empyrical.annual_return(day_returns)` whereas
     # our risk doesn't; they use the simpler approach below.
-    annualized_return = (1 + gmean_day_return)**annual_trading_days - 1
+    annualized_return = (1 + gmean_day_return) ** annual_trading_days - 1
     s.loc['Return (Ann.) [%]'] = annualized_return * 100
-    s.loc['Volatility (Ann.) [%]'] = np.sqrt((day_returns.var(ddof=int(bool(day_returns.shape))) + (1 + gmean_day_return)**2)**annual_trading_days - (1 + gmean_day_return)**(2 * annual_trading_days)) * 100  # noqa: E501
+    s.loc['Volatility (Ann.) [%]'] = (
+        np.sqrt(
+            (
+                day_returns.var(ddof=int(bool(day_returns.shape)))
+                + (1 + gmean_day_return) ** 2
+            )
+            ** annual_trading_days
+            - (1 + gmean_day_return) ** (2 * annual_trading_days)
+        )
+        * 100
+    )  # noqa: E501
     # s.loc['Return (Ann.) [%]'] = gmean_day_return * annual_trading_days * 100
     # s.loc['Risk (Ann.) [%]'] = day_returns.std(ddof=1) * np.sqrt(annual_trading_days) * 100
     if is_datetime_index:
-        time_in_years = (s.loc['Duration'].days + s.loc['Duration'].seconds / 86400) / annual_trading_days
-        s.loc['CAGR [%]'] = ((s.loc['Equity Final [$]'] / equity[0])**(1 / time_in_years) - 1) * 100 if time_in_years else np.nan  # noqa: E501
+        time_in_years = (
+            s.loc['Duration'].days + s.loc['Duration'].seconds / 86400
+        ) / annual_trading_days
+        s.loc['CAGR [%]'] = (
+            (
+                (s.loc['Equity Final [$]'] / equity['Equity'].iloc[0])
+                ** (1 / time_in_years)
+                - 1
+            )
+            * 100
+            if time_in_years
+            else np.nan
+        )  # noqa: E501
 
     # Our Sharpe mismatches `empyrical.sharpe_ratio()` because they use arithmetic mean return
     # and simple standard deviation
-    s.loc['Sharpe Ratio'] = (s.loc['Return (Ann.) [%]'] - risk_free_rate * 100) / (s.loc['Volatility (Ann.) [%]'] or np.nan)  # noqa: E501
+    s.loc['Sharpe Ratio'] = (s.loc['Return (Ann.) [%]'] - risk_free_rate * 100) / (
+        s.loc['Volatility (Ann.) [%]'] or np.nan
+    )  # noqa: E501
     # Our Sortino mismatches `empyrical.sortino_ratio()` because they use arithmetic mean return
     with np.errstate(divide='ignore'):
-        s.loc['Sortino Ratio'] = (annualized_return - risk_free_rate) / (np.sqrt(np.mean(day_returns.clip(-np.inf, 0)**2)) * np.sqrt(annual_trading_days))  # noqa: E501
+        s.loc['Sortino Ratio'] = (annualized_return - risk_free_rate) / (
+            np.sqrt(np.mean(day_returns.clip(-np.inf, 0) ** 2))
+            * np.sqrt(annual_trading_days)
+        )  # noqa: E501
     max_dd = -np.nan_to_num(dd.max())
     s.loc['Calmar Ratio'] = annualized_return / (-max_dd or np.nan)
-    equity_log_returns = np.log(equity[1:] / equity[:-1])
+    equity_log_returns = np.log(
+        equity['Equity'].values[1:] / equity['Equity'].values[:-1]
+    )
     market_log_returns = np.log(c[1:] / c[:-1])
     beta = np.nan
     if len(equity_log_returns) > 1 and len(market_log_returns) > 1:
@@ -161,7 +235,11 @@ def compute_stats(
         cov_matrix = np.cov(equity_log_returns, market_log_returns)
         beta = cov_matrix[0, 1] / cov_matrix[1, 1]
     # Jensen CAPM Alpha: can be strongly positive when beta is negative and B&H Return is large
-    s.loc['Alpha [%]'] = s.loc['Return [%]'] - risk_free_rate * 100 - beta * (s.loc['Buy & Hold Return [%]'] - risk_free_rate * 100)  # noqa: E501
+    s.loc['Alpha [%]'] = (
+        s.loc['Return [%]']
+        - risk_free_rate * 100
+        - beta * (s.loc['Buy & Hold Return [%]'] - risk_free_rate * 100)
+    )  # noqa: E501
     s.loc['Beta'] = beta
     s.loc['Max. Drawdown [%]'] = max_dd * 100
     s.loc['Avg. Drawdown [%]'] = -dd_peaks.mean() * 100
@@ -176,14 +254,21 @@ def compute_stats(
     s.loc['Avg. Trade [%]'] = mean_return * 100
     s.loc['Max. Trade Duration'] = _round_timedelta(durations.max())
     s.loc['Avg. Trade Duration'] = _round_timedelta(durations.mean())
-    s.loc['Profit Factor'] = returns[returns > 0].sum() / (abs(returns[returns < 0].sum()) or np.nan)  # noqa: E501
+    s.loc['Profit Factor'] = returns[returns > 0].sum() / (
+        abs(returns[returns < 0].sum()) or np.nan
+    )  # noqa: E501
     s.loc['Expectancy [%]'] = returns.mean() * 100
     s.loc['SQN'] = np.sqrt(n_trades) * pl.mean() / (pl.std() or np.nan)
-    s.loc['Kelly Criterion'] = win_rate - (1 - win_rate) / (pl[pl > 0].mean() / -pl[pl < 0].mean())
+    s.loc['Kelly Criterion'] = win_rate - (1 - win_rate) / (
+        pl[pl > 0].mean() / -pl[pl < 0].mean()
+    )
 
     s.loc['_strategy'] = strategy_instance
     s.loc['_equity_curve'] = equity_df
     s.loc['_trades'] = trades_df
+    s.loc['_orders'] = orders_df
+    s.loc['_positions'] = positions
+    s.loc['_trade_start_bar'] = trade_start_bar
 
     s = _Stats(s)
     return s
@@ -192,21 +277,72 @@ def compute_stats(
 class _Stats(pd.Series):
     def __repr__(self):
         with pd.option_context(
-            'display.max_colwidth', 20,  # Prevent expansion due to _equity and _trades dfs
-            'display.max_rows', len(self),  # Reveal self whole
-            'display.precision', 5,  # Enough for my eyes at least
+            'display.max_colwidth',
+            20,  # Prevent expansion due to _equity and _trades dfs
+            'display.max_rows',
+            len(self),  # Reveal self whole
+            'display.precision',
+            5,  # Enough for my eyes at least
             # 'format.na_rep', '--',  # TODO: Enable once it works
         ):
             return super().__repr__()
 
 
-def dummy_stats():
-    from .backtesting import Trade, _Broker
-    index = pd.DatetimeIndex(['2025'])
-    data = pd.DataFrame({col: [np.nan] for col in ('Close',)}, index=index)
-    trade = Trade(_Broker(data=data, cash=10000, spread=.01, commission=.01, margin=.1,
-                          trade_on_close=True, hedging=True, exclusive_orders=False, index=index),
-                  1, 1, 0, None)
+def dummy_stats(_data=None):
+    from .backtesting import Trade, _Broker, _Data
+
+    if _data is None:
+        # Create a multi-level DataFrame
+        index = pd.DatetimeIndex(['2025'])
+        _data = pd.DataFrame(
+            {('Asset1', 'Close'): [10], ('Asset2', 'Close'): [20]}, index=index
+        )
+        # _data = pd.DataFrame({col: [np.nan] for col in ('Close',)}, index=index)
+
+    # _Data constructor expects Dict[str, pd.DataFrame].
+    # _data is a DataFrame with MultiIndex columns. Convert it.
+    _data_dict_for_constructor = {
+        ticker: _data[ticker].copy(deep=False) for ticker in _data.columns.levels[0]
+    }
+    data = _Data(_data_dict_for_constructor)
+    _broker = _Broker(
+        data=data,
+        cash=10000,
+        spread=0.01,
+        commission=0.01,
+        margin=0.1,
+        trade_on_close=True,
+        hedging=True,
+        exclusive_orders=False,
+        holding={},
+        trade_start_date=None,
+        lot_size=1,
+        fail_fast=True,
+        storage=None,
+    )
+    trade = Trade(_broker, 'Asset', 1, 1, 0, None)
     trade._replace(exit_price=1, exit_bar=0)
-    trade._commissions = np.nan
-    return compute_stats([trade], np.r_[[np.nan]], data, None, 0)
+    equity = (
+        pd.DataFrame(
+            _broker._equity, index=data.index, columns=["Equity", *data.tickers, "Cash"]
+        )
+        .bfill()
+        .fillna(_broker._cash)
+    )
+
+    weights = 1 / _data.xs("Close", axis=1, level=1).iloc[0]
+    weighted_data = _data.copy()
+    # weighted_data = weighted_data.loc[:, (slice(None), ohlc)]
+    for ticker in weights.index:
+        weighted_data[ticker] = weighted_data[ticker] * weights[ticker]
+    weighted_data = weighted_data.T.groupby(level=1).agg("sum").T / weights.sum()
+    _ohlc_ref_data = weighted_data
+
+    return compute_stats(
+        orders=[],
+        trades=[trade],
+        equity=equity,
+        ohlc_data=_ohlc_ref_data,
+        strategy_instance=None,
+        risk_free_rate=0,
+    )

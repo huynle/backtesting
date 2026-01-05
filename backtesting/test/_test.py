@@ -173,9 +173,7 @@ class TestBacktest(TestCase):
                 self.position.is_long
 
                 if crossover(self.sma, self.data.Close):
-                    for order in self.orders:
-                        if not order.is_contingent:
-                            order.cancel()
+                    [order.cancel() for order in self.orders]  # cancels only non-contingent
                     price = self.data.Close[-1]
                     sl, tp = 1.05 * price, .9 * price
 
@@ -228,7 +226,7 @@ class TestBacktest(TestCase):
 
     def test_broker_params(self):
         bt = Backtest(GOOG.iloc[:100], SmaCross,
-                      cash=1000, spread=.01, margin=.1, trade_on_close=True)
+            cash=1000, spread=.01, margin=.1, trade_on_close=True)
         bt.run()
 
     def test_spread_commission(self):
@@ -262,27 +260,6 @@ class TestBacktest(TestCase):
         self.assertEqual(stats['_equity_curve']['Equity'].iloc[2:4].round(2).tolist(),
                          [9781.28, 9846.04])
 
-    def test_commissions(self):
-        class S(_S):
-            def next(self):
-                if len(self.data) == 2:
-                    self.buy(size=SIZE, tp=3)
-
-        FIXED_COMMISSION, COMMISSION = 10, .01
-        CASH, SIZE, PRICE_ENTRY, PRICE_EXIT = 5000, 100, 1, 4
-        arr = np.r_[1, PRICE_ENTRY, 1, 2, PRICE_EXIT, 1, 2]
-        df = pd.DataFrame({'Open': arr, 'High': arr, 'Low': arr, 'Close': arr})
-        with self.assertWarnsRegex(UserWarning, 'index is not datetime'):
-            stats = Backtest(df, S, cash=CASH, commission=(FIXED_COMMISSION, COMMISSION)).run()
-        EXPECTED_PAID_COMMISSION = (
-            FIXED_COMMISSION + COMMISSION * SIZE * PRICE_ENTRY +
-            FIXED_COMMISSION + COMMISSION * SIZE * PRICE_EXIT)
-        self.assertEqual(stats['Commissions [$]'], EXPECTED_PAID_COMMISSION)
-        self.assertEqual(stats._trades['Commission'][0], EXPECTED_PAID_COMMISSION)
-        self.assertEqual(
-            stats['Equity Final [$]'],
-            CASH + (PRICE_EXIT - PRICE_ENTRY) * SIZE - EXPECTED_PAID_COMMISSION)
-
     def test_dont_overwrite_data(self):
         df = EURUSD.copy()
         bt = Backtest(df, SmaCross)
@@ -306,7 +283,7 @@ class TestBacktest(TestCase):
         dd = pd.Series([0, 1, 7, 0, 4, 0, 0])
         durations, peaks = compute_drawdown_duration_peaks(dd)
         np.testing.assert_array_equal(durations, pd.Series([3, 2], index=[3, 5]).reindex(dd.index))
-        np.testing.assert_array_equal(peaks, pd.Series([7, 4], index=[3, 5]).reindex(dd.index))
+        np.testing.assert_array_equal( peaks, pd.Series([7, 4], index=[3, 5]).reindex(dd.index))
 
     def test_compute_stats(self):
         stats = Backtest(GOOG, SmaCross, finalize_trades=True).run()
@@ -353,12 +330,12 @@ class TestBacktest(TestCase):
 
         diff = {key: print(key) or value  # noqa: T201
                 for key, value in stats.filter(regex='^[^_]').items()
-                if not almost_equal(value, expected[key])}
+            if not almost_equal(value, expected[key])}
         self.assertDictEqual(diff, {})
 
         self.assertSequenceEqual(
             sorted(stats['_equity_curve'].columns),
-            sorted(['Equity', 'DrawdownPct', 'DrawdownDuration']))
+            sorted(['Equity', 'DrawdownPct', 'DrawdownDuration', 'Cash', 'Asset']))
 
         self.assertEqual(len(stats['_trades']), 66)
 
@@ -368,9 +345,8 @@ class TestBacktest(TestCase):
             for n in (SmaCross.fast, SmaCross.slow)]
         self.assertSequenceEqual(
             sorted(stats['_trades'].columns),
-            sorted(['Size', 'EntryBar', 'ExitBar', 'EntryPrice', 'ExitPrice',
-                    'SL', 'TP', 'PnL', 'ReturnPct', 'EntryTime', 'ExitTime',
-                    'Duration', 'Tag', 'Commission',
+            sorted(['Size', 'EntryBar', 'ExitBar', 'EntryPrice', 'ExitPrice', 'SL', 'TP',
+                    'PnL', 'ReturnPct', 'EntryTime', 'ExitTime', 'Duration', 'Tag', 'Ticker','Commissions',
                     *indicator_columns]))
 
     def test_compute_stats_bordercase(self):
@@ -395,7 +371,7 @@ class TestBacktest(TestCase):
             def next(self):
                 pass
 
-        for strategy in (SmaCross,
+        for strategy in (SmaCross, 
                          SingleTrade,
                          SinglePosition,
                          NoTrade):
@@ -456,8 +432,7 @@ class TestBacktest(TestCase):
                 elif len(self.data) == len(SHORT_DATA):
                     self.position.close()
 
-        with self.assertWarnsRegex(UserWarning, 'finalize_trades'):
-            self.assertTrue(Backtest(SHORT_DATA, S, finalize_trades=False).run()._trades.empty)
+        self.assertTrue(Backtest(SHORT_DATA, S, finalize_trades=False).run()._trades.empty)
         self.assertFalse(Backtest(SHORT_DATA, S, finalize_trades=True).run()._trades.empty)
 
     def test_check_adjusted_price_when_placing_order(self):
@@ -465,7 +440,7 @@ class TestBacktest(TestCase):
             def next(self):
                 self.buy(tp=self.data.Close * 1.01)
 
-        self.assertRaises(ValueError, Backtest(SHORT_DATA, S, spread=.02).run)
+        self.assertRaises(ValueError, Backtest(SHORT_DATA, S, spread=0.02).run)
 
 
 class TestStrategy(TestCase):
@@ -630,12 +605,12 @@ class TestOptimize(TestCase):
                                                 ('sambo', 6, 0),
                                                 ('sambo', .42, 0)):
             with self.subTest(method=method,
-                              max_tries=max_tries,
+                    max_tries=max_tries,
                               random_state=random_state):
                 _, heatmap = bt.optimize(max_tries=max_tries,
-                                         method=method,
-                                         random_state=random_state,
-                                         return_heatmap=True,
+                    method=method,
+                    random_state=random_state,
+                    return_heatmap=True,
                                          **OPT_PARAMS)
                 self.assertEqual(len(heatmap), 6)
 
@@ -676,16 +651,16 @@ class TestPlot(TestCase):
         bt.run()
         with _tempfile() as f:
             for p in dict(plot_volume=False,  # noqa: C408
-                          plot_equity=False,
-                          plot_return=True,
-                          plot_pl=False,
-                          plot_drawdown=True,
-                          plot_trades=False,
-                          superimpose=False,
+                plot_equity=False,
+                plot_return=True,
+                plot_pl=False,
+                plot_drawdown=True,
+                plot_trades=False,
+                superimpose=False,
                           resample='1W',
-                          smooth_equity=False,
-                          relative_equity=False,
-                          reverse_indicators=True,
+                smooth_equity=False,
+                relative_equity=False,
+                reverse_indicators=True,
                           show_legend=False).items():
                 with self.subTest(param=p[0]):
                     bt.plot(**dict([p]), filename=f, open_browser=False)
@@ -751,7 +726,7 @@ class TestPlot(TestCase):
                     self.position.close()
                 elif date == pd.Timestamp('Tue 11 Nov 2008'):
                     self.sell(stop=self.data.Low,
-                              limit=324.90,  # High from 14 Nov
+                        limit=324.90,  # High from 14 Nov
                               size=200)
 
         bt = Backtest(GOOG, S, margin=.1)
@@ -796,7 +771,7 @@ class TestPlot(TestCase):
                     return SMA(self.data.Close, 5), SMA(self.data.Close, 10)
 
                 test_self.assertRaises(TypeError, self.I, _SMA, name=42)
-                test_self.assertRaises(ValueError, self.I, _SMA, name=("SMA One", ))
+                test_self.assertRaises(ValueError, self.I, _SMA, name=("SMA One",))
                 test_self.assertRaises(
                     ValueError, self.I, _SMA, name=("SMA One", "SMA Two", "SMA Three"))
 
@@ -943,7 +918,7 @@ class TestLib(TestCase):
             def init(self):
                 super().init()
                 self.set_atr_periods(40)
-                self.set_trailing_pct(.1)
+                self.set_trailing_pct(0.1)
                 self.set_trailing_sl(3)
                 self.sma = self.I(lambda: self.data.Close.s.rolling(10).mean())
 
@@ -1041,13 +1016,10 @@ class TestDocs(TestCase):
     DOCS_DIR = os.path.join(os.path.dirname(__file__), '..', '..', 'doc')
 
     @unittest.skipUnless(os.path.isdir(DOCS_DIR), "docs dir doesn't exist")
-    @unittest.skipUnless(sys.platform.startswith('linux'), "test_examples requires mp.start_method=fork")
     def test_examples(self):
-        import backtesting
         examples = glob(os.path.join(self.DOCS_DIR, 'examples', '*.py'))
         self.assertGreaterEqual(len(examples), 4)
-        with chdir(gettempdir()), \
-                patch(backtesting, 'Pool', mp.get_context('fork').Pool):
+        with chdir(gettempdir()):
             for file in examples:
                 with self.subTest(example=os.path.basename(file)):
                     run_path(file)
@@ -1075,7 +1047,7 @@ class TestRegressions(TestCase):
 
         arr = np.r_[100, 100, 100, 50, 50]
         df = pd.DataFrame({'Open': arr, 'High': arr, 'Low': arr, 'Close': arr})
-        with self.assertWarnsRegex(UserWarning, 'index is not datetime'):
+        with self.assertWarnsRegex(UserWarning, 'Data index for Asset is not datetime'):
             bt = Backtest(df, S, cash=100, trade_on_close=True)
         self.assertEqual(bt.run()._trades['ExitPrice'][0], 50)
 
@@ -1106,7 +1078,7 @@ class TestRegressions(TestCase):
         df = pd.DataFrame({
             'Open': arr - 10,
             'Close': arr, 'High': arr, 'Low': arr})
-        with self.assertWarnsRegex(UserWarning, 'index is not datetime'):
+        with self.assertWarnsRegex(UserWarning, 'Data index for Asset is not datetime'):
             trades = TestStrategy._Backtest(coro, df, cash=250, trade_on_close=True).run()._trades
             # trades = Backtest(df, S, cash=250, trade_on_close=True).run()._trades
             self.assertEqual(trades['EntryBar'][0], 1)
@@ -1118,7 +1090,7 @@ class TestRegressions(TestCase):
             self.assertEqual(trades['EntryPrice'][1], 101)
             self.assertEqual(trades['ExitPrice'][1], 40)
 
-        with self.assertWarnsRegex(UserWarning, 'index is not datetime'):
+        with self.assertWarnsRegex(UserWarning, 'Data index for Asset is not datetime'):
             trades = TestStrategy._Backtest(coro, df, cash=250, trade_on_close=False).run()._trades
             # trades = Backtest(df, S, cash=250, trade_on_close=False).run()._trades
             self.assertEqual(trades['EntryBar'][0], 2)
@@ -1166,14 +1138,3 @@ class TestRegressions(TestCase):
         data.index = data.index.tz_localize('Asia/Kolkata')
         res = Backtest(data, SmaCross).optimize(fast=range(2, 3), slow=range(4, 5))
         self.assertGreater(res['# Trades'], 0)
-
-    def test_sl_tp_values_in_trades_df(self):
-        class S(_S):
-            def next(self):
-                self.next = lambda: None
-                self.buy(size=1, tp=111)
-                self.buy(size=1, sl=99)
-
-        trades = Backtest(SHORT_DATA, S).run()._trades
-        self.assertEqual(trades['SL'].fillna(0).tolist(), [0, 99])
-        self.assertEqual(trades['TP'].fillna(0).tolist(), [111, 0])

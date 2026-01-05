@@ -18,7 +18,7 @@ from collections import OrderedDict
 from inspect import currentframe
 from itertools import chain, compress, count
 from numbers import Number
-from typing import Callable, Generator, Optional, Sequence, Union
+from typing import Callable, Dict, Generator, List, Optional, Sequence, Type, Union
 
 import numpy as np
 import pandas as pd
@@ -45,6 +45,7 @@ e.g.
 """
 
 TRADES_AGG = OrderedDict((
+    ('Ticker', 'first'),
     ('Size', 'sum'),
     ('EntryBar', 'first'),
     ('ExitBar', 'last'),
@@ -65,6 +66,7 @@ e.g.
 
 _EQUITY_AGG = {
     'Equity': 'last',
+    'Cash': 'last',
     'DrawdownPct': 'max',
     'DrawdownDuration': 'max',
 }
@@ -110,7 +112,7 @@ def crossover(series1: Sequence, series2: Sequence) -> bool:
         (series2, series2) if isinstance(series2, Number) else
         series2)
     try:
-        return series1[-2] < series2[-2] and series1[-1] > series2[-1]  # type: ignore
+        return series1[-2] < series2[-2] and series1[-1] > series2[-1]
     except IndexError:
         return False
 
@@ -191,16 +193,16 @@ def compute_stats(
         >>> long_stats = compute_stats(stats=stats, trades=only_long_trades,
         ...                            data=GOOG, risk_free_rate=.02)
     """
-    equity = stats._equity_curve.Equity
+    equity = stats._equity_curve
     if trades is None:
         trades = stats._trades
     else:
         # XXX: Is this buggy?
         equity = equity.copy()
-        equity[:] = stats._equity_curve.Equity.iloc[0]
+        equity['Equity'] = stats._equity_curve.Equity.iloc[0]
         for t in trades.itertuples(index=False):
-            equity.iloc[t.EntryBar:] += t.PnL
-    return _compute_stats(trades=trades, equity=equity.values, ohlc_data=data,
+            equity.iloc[t.EntryBar:, equity.columns.get_loc('Equity')] += t.PnL
+    return _compute_stats(orders=stats._orders, trades=trades, equity=equity, ohlc_data=data,
                           risk_free_rate=risk_free_rate, strategy_instance=stats._strategy)
 
 
@@ -311,7 +313,7 @@ http://pandas.pydata.org/pandas-docs/stable/timeseries.html#offset-aliases
             strategy_I = frame.f_locals['self'].I             # type: ignore
             break
     else:
-        def strategy_I(func, *args, **kwargs):  # noqa: F811
+        def strategy_I(func, *args, **kwargs):
             return func(*args, **kwargs)
 
     def wrap_func(resampled, *args, **kwargs):
@@ -336,7 +338,7 @@ http://pandas.pydata.org/pandas-docs/stable/timeseries.html#offset-aliases
 
 
 def random_ohlc_data(example_data: pd.DataFrame, *,
-                     frac=1., random_state: Optional[int] = None) -> Generator[pd.DataFrame, None, None]:
+                     frac=1., random_state: Optional[int] = None) -> pd.DataFrame:
     """
     OHLC data generator. The generated OHLC data has basic
     [descriptive statistics](https://en.wikipedia.org/wiki/Descriptive_statistics)
@@ -496,7 +498,7 @@ class TrailingStrategy(Strategy):
     def next(self):
         super().next()
         # Can't use index=-1 because self.__atr is not an Indicator type
-        index = len(self.data) - 1
+        index = len(self.data)-1
         for trade in self.trades:
             if trade.is_long:
                 trade.sl = max(trade.sl or -np.inf,
@@ -534,18 +536,22 @@ class FractionalBacktest(Backtest):
                 category=DeprecationWarning, stacklevel=2)
             fractional_unit = 1 / kwargs.pop('satoshi')
         self._fractional_unit = fractional_unit
-        self.__data: pd.DataFrame = data.copy(deep=False)  # Shallow copy
-        for col in ('Open', 'High', 'Low', 'Close',):
-            self.__data[col] = self.__data[col] * self._fractional_unit
-        for col in ('Volume',):
-            self.__data[col] = self.__data[col] / self._fractional_unit
         with warnings.catch_warnings(record=True):
             warnings.filterwarnings(action='ignore', message='frac')
-            super().__init__(data, *args, **kwargs)
+        
+        # Scale data before passing to superclass __init__
+        # This ensures Backtest initializes with scaled data, avoiding potential
+        # issues if it skips setting self._data due to e.g. price > cash warnings.
+        scaled_data = data.copy()
+        scaled_data[['Open', 'High', 'Low', 'Close']] *= self._fractional_unit
+        scaled_data['Volume'] /= self._fractional_unit
+        
+        super().__init__(scaled_data, *args, **kwargs)
 
     def run(self, **kwargs) -> pd.Series:
-        with patch(self, '_data', self.__data):
-            result = super().run(**kwargs)
+        # self._data is already scaled (set by super().__init__ with scaled_data)
+        # No need to copy, scale, or patch self._data here.
+        result = super().run(**kwargs)
 
         trades: pd.DataFrame = result['_trades']
         trades['Size'] *= self._fractional_unit
@@ -557,7 +563,7 @@ class FractionalBacktest(Backtest):
                 indicator /= self._fractional_unit
 
         return result
-
+    
 
 # Prevent pdoc3 documenting __init__ signature of Strategy subclasses
 for cls in list(globals().values()):
@@ -569,66 +575,97 @@ class MultiBacktest:
     """
     Multi-dataset `backtesting.backtesting.Backtest` wrapper.
 
-    Run supplied `backtesting.backtesting.Strategy` on several instruments,
-    in parallel.  Used for comparing strategy runs across many instruments
-    or classes of instruments. Example:
+    Run supplied `backtesting.backtesting.Strategy` on several data sets,
+    in parallel. Each data set can be a single `pd.DataFrame` (for single-asset
+    strategies) or a `Dict[str, pd.DataFrame]` (for multi-asset strategies).
+    Used for comparing strategy runs across many instruments or scenarios.
 
-        from backtesting.test import EURUSD, BTCUSD, SmaCross
-        btm = MultiBacktest([EURUSD, BTCUSD], SmaCross)
-        stats_per_ticker: pd.DataFrame = btm.run(fast=10, slow=20)
-        heatmap_per_ticker: pd.DataFrame = btm.optimize(...)
+    Example:
+        from backtesting.test import EURUSD, BTCUSD, GOOG, SPY, SmaCross
+        
+        # List of single-asset DataFrames
+        data_list_single = [EURUSD, BTCUSD]
+        btm_single = MultiBacktest(data_list_single, SmaCross)
+        stats_single: pd.DataFrame = btm_single.run(fast=10, slow=20)
+
+        # List of multi-asset data (dictionaries of DataFrames)
+        multi_data1 = {"GOOG": GOOG, "SPY": SPY}
+        multi_data2 = {"EURUSD": EURUSD, "BTCUSD": BTCUSD} # Another example
+        data_list_multi = [multi_data1, multi_data2]
+        # Assuming SmaCross can handle multi-asset or is adapted
+        btm_multi = MultiBacktest(data_list_multi, SmaCross) 
+        stats_multi: pd.DataFrame = btm_multi.run(fast=10, slow=20)
     """
-    def __init__(self, df_list, strategy_cls, **kwargs):
-        self._dfs = df_list
+    def __init__(self,
+                 data_items: Union[List[pd.DataFrame], List[Dict[str, pd.DataFrame]]],
+                 strategy_cls: Type[Strategy],
+                 **kwargs):
+        self._data_items = data_items
         self._strategy = strategy_cls
         self._bt_kwargs = kwargs
 
-    def run(self, **kwargs):
+    def run(self, **kwargs) -> pd.DataFrame:
         """
-        Wraps `backtesting.backtesting.Backtest.run`. Returns `pd.DataFrame` with
-        currency indexes in columns.
+        Wraps `backtesting.backtesting.Backtest.run`. Iterates through the list of
+        data items provided during initialization. Returns a `pd.DataFrame` where
+        columns correspond to the results from each data item.
         """
         from . import Pool
         with Pool() as pool, \
                 SharedMemoryManager() as smm:
-            shm = [smm.df2shm(df) for df in self._dfs]
+            # Each 'item' in self._data_items is either a DataFrame or a Dict[str, DataFrame]
+            # smm.df2shm handles both cases.
+            shm_info_list = [smm.df2shm(item) for item in self._data_items]
             results = _tqdm(
                 pool.imap(self._mp_task_run,
-                          ((df_batch, self._strategy, self._bt_kwargs, kwargs)
-                           for df_batch in _batch(shm))),
-                total=len(shm),
+                          ((item_shm_batch, self._strategy, self._bt_kwargs, kwargs)
+                           for item_shm_batch in _batch(shm_info_list))),
+                total=len(shm_info_list),
                 desc=self.run.__qualname__,
                 mininterval=2
             )
+            # The result columns will be simple integer indices (0, 1, 2, ...)
+            # corresponding to the order of data_items.
             df = pd.DataFrame(list(chain(*results))).transpose()
         return df
 
     @staticmethod
     def _mp_task_run(args):
-        data_shm, strategy, bt_kwargs, run_kwargs = args
-        dfs, shms = zip(*(SharedMemoryManager.shm2df(i) for i in data_shm))
+        item_shm_info_batch, strategy_cls, bt_kwargs, run_kwargs = args
+        # Each 'item_shm_info' corresponds to one data item (DataFrame or Dict[str, DataFrame])
+        reconstructed_data_items, all_shms_for_batch = zip(*(
+            SharedMemoryManager.shm2df(item_shm_info) for item_shm_info in item_shm_info_batch
+        ))
         try:
-            return [stats.filter(regex='^[^_]') if stats['# Trades'] else None
-                    for stats in (Backtest(df, strategy, **bt_kwargs).run(**run_kwargs)
-                                  for df in dfs)]
+            return [
+                stats.filter(regex='^[^_]') if stats['# Trades'] else None
+                for stats in (
+                    Backtest(data_item, strategy_cls, **bt_kwargs).run(**run_kwargs)
+                    for data_item in reconstructed_data_items
+                )
+            ]
         finally:
-            for shmem in chain(*shms):
-                shmem.close()
+            for shm_list_for_item in all_shms_for_batch:
+                for shmem in shm_list_for_item:
+                    shmem.close()
 
     def optimize(self, **kwargs) -> pd.DataFrame:
         """
-        Wraps `backtesting.backtesting.Backtest.optimize`, but returns `pd.DataFrame` with
-        currency indexes in columns.
+        Wraps `backtesting.backtesting.Backtest.optimize`. Iterates through the list
+        of data items. Returns a `pd.DataFrame` where columns correspond to the
+        optimization heatmaps from each data item.
 
-            heamap: pd.DataFrame = btm.optimize(...)
-            from backtesting.plot import plot_heatmaps
-            plot_heatmaps(heatmap.mean(axis=1))
+            heatmap_df: pd.DataFrame = btm.optimize(...)
+            # To get an average heatmap across all data items:
+            # average_heatmap = heatmap_df.mean(axis=1)
+            # from backtesting.lib import plot_heatmaps
+            # plot_heatmaps(average_heatmap)
         """
         heatmaps = []
         # Simple loop since bt.optimize already does its own multiprocessing
-        for df in _tqdm(self._dfs, desc=self.__class__.__name__, mininterval=2):
-            bt = Backtest(df, self._strategy, **self._bt_kwargs)
-            _best_stats, heatmap = bt.optimize(  # type: ignore
+        for data_item in _tqdm(self._data_items, desc=self.__class__.__name__, mininterval=2):
+            bt = Backtest(data_item, self._strategy, **self._bt_kwargs)
+            _best_stats, heatmap = bt.optimize( # type: ignore
                 return_heatmap=True, return_optimization=False, **kwargs)
             heatmaps.append(heatmap)
         heatmap = pd.DataFrame(dict(zip(count(), heatmaps)))
@@ -639,7 +676,7 @@ class MultiBacktest:
 
 __all__ = [getattr(v, '__name__', k)
            for k, v in globals().items()                        # export
-           if ((callable(v) and getattr(v, '__module__', None) == __name__ or  # callables from this module
+           if ((callable(v) and v.__module__ == __name__ or     # callables from this module
                 k.isupper()) and                                # or CONSTANTS
                not getattr(v, '__name__', k).startswith('_'))]  # neither marked internal
 
