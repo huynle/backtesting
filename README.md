@@ -1,3 +1,8 @@
+---
+title: W10-2025
+date: 03/16/2025
+lastmod: 
+---
 [![](https://i.imgur.com/E8Kj69Y.png)](https://kernc.github.io/backtesting.py/)
 
 Backtesting.py
@@ -129,6 +134,11 @@ Features
 
 ![xkcd.com/1570](https://imgs.xkcd.com/comics/engineer_syllogism.png)
 
+Live Trading
+-----------
+look into forks
+- https://github.com/OppOops/backtesting.py/blob/master/backtesting/live.py
+- https://github.com/ypogorelova/backtesting.py
 
 Issues
 ------
@@ -143,9 +153,24 @@ please read [contributing guidelines](CONTRIBUTING.md), particularly the section
 about crafting useful bug reports and ```` ``` ````-fencing your code. We thank you!
 
 
-Alternatives
-------------
-See [alternatives.md] for a list of alternative Python
-backtesting frameworks and related packages.
+Jupyter Notebook
+----------------
+```
+pip install jupyterlab
+jupyter lab
+````
 
-[alternatives.md]: https://github.com/kernc/backtesting.py/blob/master/doc/alternatives.md
+
+ADDITIONAL WORK
+---------------
+* make backtest engine run live
+* "events" make up a strategy
+* Position Manager
+  + ensures risks and reward ratio, stop loss, etc
+
+
+
+---
+## Logs
+### Sun 03/16/2025
++ looking to make backtest engine run on live data by yielding
