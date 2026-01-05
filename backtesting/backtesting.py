@@ -14,16 +14,113 @@ import warnings
 import traceback
 from abc import ABC, abstractmethod
 from copy import copy
+from dataclasses import dataclass
 from datetime import datetime
 from functools import lru_cache, partial
 from itertools import chain, product, repeat
 from math import copysign
 from numbers import Number
-from typing import Callable, Dict, List, Optional, Sequence, Tuple, Type, Union
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    List,
+    Optional,
+    Protocol,
+    Sequence,
+    Tuple,
+    Type,
+    Union,
+)
 
 import numpy as np
 import pandas as pd
 from numpy.random import default_rng
+
+
+@dataclass
+class OptimizationResult:
+    """Result from a single parameter combination in bt.optimize().
+
+    Attributes:
+        params: Dictionary of parameter name to value for this combination
+        stats: pandas Series with backtest statistics (None if failed)
+        heatmap_value: The maximized metric value for heatmap (None if failed)
+        error: Error message if this combination failed (None if successful)
+        duration_ms: Execution time in milliseconds
+
+    Example:
+        >>> result = OptimizationResult(
+        ...     params={"period": 10, "threshold": 0.5},
+        ...     stats=pd.Series({"Sharpe Ratio": 1.5}),
+        ...     heatmap_value=1.5,
+        ...     duration_ms=150.0
+        ... )
+    """
+
+    params: Dict[str, Any]
+    stats: Optional[pd.Series]
+    heatmap_value: Optional[float]
+    error: Optional[str] = None
+    duration_ms: float = 0
+
+
+class OptimizeCallback(Protocol):
+    """Protocol for optimization callbacks.
+
+    Implement this protocol to receive notifications during bt.optimize() runs.
+    All methods are called synchronously from the main process after worker
+    results are collected.
+
+    Example:
+        >>> class MyCallback:
+        ...     def on_result(self, result: OptimizationResult) -> None:
+        ...         print(f"Completed {result.params}: {result.heatmap_value}")
+        ...     def on_error(self, result: OptimizationResult) -> None:
+        ...         print(f"Failed {result.params}: {result.error}")
+        ...     def on_progress(self, completed: int, total: int,
+        ...                     best: Optional[OptimizationResult]) -> None:
+        ...         print(f"Progress: {completed}/{total}")
+        ...     def on_complete(self, best: Optional[OptimizationResult]) -> None:
+        ...         print(f"Done! Best: {best.heatmap_value if best else 'N/A'}")
+    """
+
+    def on_result(self, result: OptimizationResult) -> None:
+        """Called when a parameter combination completes successfully.
+
+        Args:
+            result: OptimizationResult with stats and heatmap_value populated
+        """
+        ...
+
+    def on_error(self, result: OptimizationResult) -> None:
+        """Called when a parameter combination fails.
+
+        Args:
+            result: OptimizationResult with error message populated
+        """
+        ...
+
+    def on_progress(
+        self, completed: int, total: int, best: Optional[OptimizationResult]
+    ) -> None:
+        """Called after each result (success or failure) with progress info.
+
+        Args:
+            completed: Number of parameter combinations completed
+            total: Total number of parameter combinations
+            best: Current best result (highest heatmap_value), or None
+        """
+        ...
+
+    def on_complete(self, best: Optional[OptimizationResult]) -> None:
+        """Called when optimization finishes.
+
+        Args:
+            best: Best result from the entire optimization, or None if all failed
+        """
+        ...
+
 
 from ._plotting import plot  # noqa: I001
 from ._stats import compute_stats, dummy_stats
@@ -171,9 +268,9 @@ class Allocation:
             """Weights of the assets in the bucket. This is only available after weight allocation is done
             by calling `Bucket.weight_*()` methods. This is a read-only property."""
             assert (self._weights >= 0).all(), "Weight should be non-negative."
-            assert (
-                self._weights.sum() < 1.000000000000001
-            ), f"Total weight should be less than or equal to 1. Got {self._weights.sum()}"
+            assert self._weights.sum() < 1.000000000000001, (
+                f"Total weight should be less than or equal to 1. Got {self._weights.sum()}"
+            )
             return self._weights.copy()
 
         def append(
@@ -311,25 +408,25 @@ class Allocation:
             if len(self._tickers) == 0:
                 self._weights = pd.Series()
             elif isinstance(weight, Number):
-                assert (
-                    0 <= weight * len(self._tickers) < 1.000000000000001
-                ), "Total weight should be within [0, 1]."
+                assert 0 <= weight * len(self._tickers) < 1.000000000000001, (
+                    "Total weight should be within [0, 1]."
+                )
                 self._weights = pd.Series(weight, index=self._tickers)
             elif isinstance(weight, list):
-                assert all(
-                    0 <= x < 1.000000000000001 for x in weight
-                ), "Weight should be non-negative."
-                assert (
-                    sum(weight) < 1.000000000000001
-                ), "Total weight should be less than or equal to 1."
+                assert all(0 <= x < 1.000000000000001 for x in weight), (
+                    "Weight should be non-negative."
+                )
+                assert sum(weight) < 1.000000000000001, (
+                    "Total weight should be less than or equal to 1."
+                )
                 weight = weight[: len(self._tickers)]
                 weight.extend([0.0] * (len(self._tickers) - len(weight)))
                 self._weights = pd.Series(weight, index=self._tickers)
             elif isinstance(weight, pd.Series):
                 assert (weight >= 0).all(), "Weight should be non-negative."
-                assert (
-                    weight.sum() < 1.000000000000001
-                ), "Total weight should be less than or equal to 1."
+                assert weight.sum() < 1.000000000000001, (
+                    "Total weight should be less than or equal to 1."
+                )
                 weight = weight[weight.index.isin(self._tickers)]
                 self._weights = pd.Series(0.0, index=self._tickers)
                 self._weights.loc[weight.index] = weight
@@ -352,9 +449,9 @@ class Allocation:
             Args:
                 sum_: Total weight that should be allocated.
             """
-            assert (
-                sum_ is None or 0 <= sum_ < 1.000000000000001
-            ), "Total weight should be within [0, 1]."
+            assert sum_ is None or 0 <= sum_ < 1.000000000000001, (
+                "Total weight should be within [0, 1]."
+            )
             if sum_ is None:
                 sum_ = self._alloc.unallocated
             if len(self._tickers) == 0:
@@ -381,15 +478,15 @@ class Allocation:
                 relative_weights: A list of relative weights. The length of the list should be the same as the number of assets in the bucket.
                 sum_: Total weight that should be allocated.
             """
-            assert (
-                len(relative_weights) == len(self._tickers)
-            ), f"Length of relative_weight {len(relative_weights)} does not match number of assets {len(self._tickers)}"
-            assert all(
-                x >= 0 for x in relative_weights
-            ), "Relative weights should be non-negative."
-            assert (
-                sum_ is None or 0 <= sum_ < 1.000000000000001
-            ), "Total weight should be within [0, 1]."
+            assert len(relative_weights) == len(self._tickers), (
+                f"Length of relative_weight {len(relative_weights)} does not match number of assets {len(self._tickers)}"
+            )
+            assert all(x >= 0 for x in relative_weights), (
+                "Relative weights should be non-negative."
+            )
+            assert sum_ is None or 0 <= sum_ < 1.000000000000001, (
+                "Total weight should be within [0, 1]."
+            )
             if sum_ is None:
                 sum_ = self._alloc.unallocated
             if len(self._tickers) == 0:
@@ -534,22 +631,22 @@ class Allocation:
         strategy.alloc.weights = pd.Series([0.1, 0.2, 0.3], index=['A', 'B', 'C'])
         ```
         """
-        assert (
-            self._weights.index.to_list() == self._tickers
-        ), "Weight index should be the same as the asset space."
+        assert self._weights.index.to_list() == self._tickers, (
+            "Weight index should be the same as the asset space."
+        )
         assert (self._weights >= 0).all(), "Weight should be non-negative."
-        assert (
-            self._weights.sum() < 1.000000000000001
-        ), f"Total weight should be less than or equal to 1. Got {self._weights.sum()}"
+        assert self._weights.sum() < 1.000000000000001, (
+            f"Total weight should be less than or equal to 1. Got {self._weights.sum()}"
+        )
         return self._weights
 
     @weights.setter
     @_after_assume
     def weights(self, value: pd.Series) -> None:
         assert (value >= 0).all(), "Weight should be non-negative."
-        assert (
-            value.sum() < 1.000000000000001
-        ), f"Total weight should be less than or equal to 1. Got {value.sum()}"
+        assert value.sum() < 1.000000000000001, (
+            f"Total weight should be less than or equal to 1. Got {value.sum()}"
+        )
         self._weights.loc[:] = 0.0
         self._weights.loc[value.index] = value
 
@@ -571,9 +668,9 @@ class Allocation:
     def unallocated(self) -> float:
         """Unallocated equity weight. It's the remaining weight that can be allocated to assets. This is a read-only property."""
         allocated = self._weights.abs().sum()
-        assert (
-            allocated < 1.000000000000001
-        ), f"Total weight should be less than or equal to 1. Got {allocated}"
+        assert allocated < 1.000000000000001, (
+            f"Total weight should be less than or equal to 1. Got {allocated}"
+        )
         return 1.0 - allocated
 
     @_after_assume
@@ -866,9 +963,9 @@ class Strategy(ABC):
 
         For single asset strategy, `ticker` can be left as None.
         """
-        assert (
-            0 < size < 1 or round(size) == size >= 1
-        ), "size must be a positive fraction of equity, or a positive whole number of units"
+        assert 0 < size < 1 or round(size) == size >= 1, (
+            "size must be a positive fraction of equity, or a positive whole number of units"
+        )
 
         ticker = ticker or self._data.the_ticker
 
@@ -907,9 +1004,9 @@ class Strategy(ABC):
             If you merely want to close an existing long position,
             use `Position.close()` or `Trade.close()`.
         """
-        assert (
-            0 < size < 1 or round(size) == size >= 1
-        ), "size must be a positive fraction of equity, or a positive whole number of units"
+        assert 0 < size < 1 or round(size) == size >= 1, (
+            "size must be a positive fraction of equity, or a positive whole number of units"
+        )
 
         ticker = ticker or self._data.the_ticker
 
@@ -1154,7 +1251,9 @@ class Strategy(ABC):
         Args:
             n: Day index to start on. Must be within [0, len(data)-1].
         """
-        assert 0 <= n < len(self._data), f"day must be within [0, {len(self._data)-1}]"
+        assert 0 <= n < len(self._data), (
+            f"day must be within [0, {len(self._data) - 1}]"
+        )
         self._start_on_day = n
 
     @classmethod
@@ -1457,7 +1556,7 @@ class Trade:
         return (
             f'<Trade size={self.__size} time={self.__entry_bar}-{self.__exit_bar or ""} '
             f'price={self.__entry_price}-{self.__exit_price or ""} pl={self.pl:.0f}'
-            f'{" tag="+str(self.__tag) if self.__tag is not None else ""}>'
+            f'{" tag=" + str(self.__tag) if self.__tag is not None else ""}>'
         )
 
     def _replace(self, **kwargs):
@@ -1624,9 +1723,9 @@ class Trade:
 
     def __set_contingent(self, type, price):
         assert type in ('sl', 'tp')
-        assert (
-            price is None or 0 < price < np.inf
-        ), f'Make sure 0 < price < inf! price: {price}'
+        assert price is None or 0 < price < np.inf, (
+            f'Make sure 0 < price < inf! price: {price}'
+        )
         attr = f'_{self.__class__.__qualname__}__{type}_order'
         order: Order = getattr(self, attr)
         if order:
@@ -2404,7 +2503,9 @@ class Backtest:
         # Initialize data_dict and determine default_the_ticker
         data_dict: Dict[str, pd.DataFrame] = {}
         self._default_the_ticker: Optional[str] = None  # New attribute
-        main_data_single_df_ticker_name: Optional[str] = None # Will store the name of the single main asset
+        main_data_single_df_ticker_name: Optional[str] = (
+            None  # Will store the name of the single main asset
+        )
 
         is_main_data_single_df = False
         if isinstance(data, pd.DataFrame):
@@ -2419,7 +2520,9 @@ class Backtest:
                 for ticker_level in df_copy.columns.levels[0]:
                     # Ensure each ticker's DataFrame has simple columns
                     df_for_ticker = df_copy[ticker_level].copy()
-                    df_for_ticker.columns = [str(col) for col in df_for_ticker.columns] # Ensure simple string columns
+                    df_for_ticker.columns = [
+                        str(col) for col in df_for_ticker.columns
+                    ]  # Ensure simple string columns
                     data_dict[str(ticker_level)] = df_for_ticker
                 is_main_data_single_df = False  # Main data is inherently multi-asset
             else:
@@ -2440,7 +2543,7 @@ class Backtest:
                 is_main_data_single_df = True
             else:
                 # Multiple entries or empty dictionary (empty handled later)
-                is_main_data_single_df = False # Main data is multi-asset or empty
+                is_main_data_single_df = False  # Main data is multi-asset or empty
                 for ticker_key, df_val in data.items():
                     if not isinstance(df_val, pd.DataFrame):
                         raise TypeError(
@@ -2463,7 +2566,9 @@ class Backtest:
                     raise TypeError(
                         f"All values in `extra_data` dictionary must be DataFrames. Found type {type(df_extra_val)} for ticker '{ticker_key}'."
                     )
-                if ticker_key not in data_dict:  # Add only if ticker doesn't exist from primary data
+                if (
+                    ticker_key not in data_dict
+                ):  # Add only if ticker doesn't exist from primary data
                     data_dict[ticker_key] = df_extra_val.copy(deep=False)
 
         # Determine default_the_ticker if main data was a single DataFrame (either from pd.DataFrame
@@ -2472,7 +2577,7 @@ class Backtest:
         # main_data_single_df_ticker_name) should be the default for direct access like self.data.Close.
         if is_main_data_single_df and extra_data and main_data_single_df_ticker_name:
             self._default_the_ticker = main_data_single_df_ticker_name
-        
+
         if not data_dict:
             raise ValueError(
                 "`data` (and `extra_data`, if provided) must not result in an empty data dictionary."
@@ -2686,8 +2791,8 @@ class Backtest:
         try:
             strategy.init()
         except Exception as e:
-            print("Strategy initialization throws exception", e) # noqa: T201
-            print(traceback.format_exc()) # noqa: T201
+            print("Strategy initialization throws exception", e)  # noqa: T201
+            print(traceback.format_exc())  # noqa: T201
             raise
 
         data._update()  # Strategy.init might have changed/added to data.df (individual ticker DFs)
@@ -2711,7 +2816,7 @@ class Backtest:
 
         # Use the length of the common index established during initialization
         # This index is stored in _Data as self._shared_index
-        data_len = len(data._shared_index) # Corrected: data_obj was data
+        data_len = len(data._shared_index)  # Corrected: data_obj was data
 
         # Disable "invalid value encountered in ..." warnings. Comparison
         # np.nan >= 3 is not invalid; it's False.
@@ -2724,7 +2829,7 @@ class Backtest:
                 miniters=100,
             ):
                 # Prepare data and indicators for `next` call
-                data._set_length(i + 1) # Corrected: data_obj was data
+                data._set_length(i + 1)  # Corrected: data_obj was data
                 for attr, indicator in indicator_attrs:
                     # Slice indicator on the last dimension (case of 2d indicator)
                     setattr(strategy, attr, indicator[..., : i + 1])
@@ -2762,12 +2867,18 @@ class Backtest:
 
             # Set data back to full length
             # for future `indicator._opts['data'].index` calls to work
-            data._set_length(data_len)  # Use the full data_len, Corrected: data_obj was data
+            data._set_length(
+                data_len
+            )  # Use the full data_len, Corrected: data_obj was data
 
-            equity_df_columns = ["Equity"] + data.tickers + ["Cash"] # Corrected: data_obj was data
+            equity_df_columns = (
+                ["Equity"] + data.tickers + ["Cash"]
+            )  # Corrected: data_obj was data
             equity = (
                 pd.DataFrame(
-                    broker._equity, index=data.index, columns=equity_df_columns # Corrected: data_obj was data
+                    broker._equity,
+                    index=data.index,
+                    columns=equity_df_columns,  # Corrected: data_obj was data
                 )
                 .bfill()
                 .fillna(broker._cash)
@@ -3011,13 +3122,11 @@ class Backtest:
                     return stats, heatmap
                 return stats
 
-            def _optimize_sambo() -> (
-                Union[
-                    pd.Series,
-                    Tuple[pd.Series, pd.Series],
-                    Tuple[pd.Series, pd.Series, dict],
-                ]
-            ):
+            def _optimize_sambo() -> Union[
+                pd.Series,
+                Tuple[pd.Series, pd.Series],
+                Tuple[pd.Series, pd.Series, dict],
+            ]:
                 try:
                     import sambo
                 except ImportError:
